@@ -1,2 +1,25 @@
 ---
-[]
+# Called only from the rolling restart play (serial: 1, max_fail_percentage: 0) for hosts
+# with mariadb_restart_required. Never from a handler (ADR 0007, docs/GALERA-LIFECYCLE.md).
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Restart MariaDB
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+    state: restarted
+
+- name: Wait for MariaDB port
+  ansible.builtin.wait_for:
+    host: "{{ tera_listen_address }}"
+    port: "{{ mariadb_port }}"
+    timeout: "{{ mariadb_port_timeout }}"
+  when: not ansible_check_mode
+
+- name: Wait for Galera node to be Synced
+  ansible.builtin.include_tasks: wait_synced.yml
+  when: mariadb_cluster_mode == 'galera'
+
+- name: Clear restart flag
+  ansible.builtin.set_fact:
+    mariadb_restart_required: false
