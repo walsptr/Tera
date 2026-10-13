@@ -7,3 +7,6 @@
 
 - name: Configure MariaDB
   ansible.builtin.import_tasks: config.yml
+
+- name: Manage users and databases
+  ansible.builtin.include_tasks: users.yml

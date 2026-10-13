@@ -20,7 +20,8 @@ Dokumen ini wajib dibaca sebelum menulis kode.
 - Template Jinja: waspadai `{#` di script bash (mis. `${#var}`) karena dianggap awal komentar Jinja; gunakan alternatif atau `{% raw %}`.
 - Nama task dalam bahasa Inggris, kalimat imperatif (`Install MariaDB packages`).
 - `fail_msg` untuk user boleh bahasa Indonesia dan wajib menyebut langkah perbaikan.
-- Task yang memuat password: `no_log: true`, dan gunakan `loop_control.label` agar nama item tetap terlihat.
+- Task yang memuat password: `no_log: true`, dan tetap isi `loop_control.label`. Catatan: di ansible-core
+  terbaru (teruji 2.21) label ikut disensor saat `no_log: true`; keamanan password didahulukan.
 
 ## Lint
 

@@ -1,2 +1,28 @@
 ---
-[]
+- name: Start MariaDB
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+    state: started
+  register: _mariadb_start
+
+# A service started just now already runs with the current 99-tera.cnf:
+# skip the rolling restart to avoid a double restart.
+- name: Clear restart flag when MariaDB was just started
+  ansible.builtin.set_fact:
+    mariadb_restart_required: "{{ (mariadb_restart_required | default(false) | bool) and not (_mariadb_start is changed) }}"
+
+- name: Enable MariaDB at boot
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+    enabled: true
+
+# Only a service started just now is guaranteed to use 99-tera.cnf (bind_address); a running
+# service picks up config changes in the rolling restart play.
+- name: Wait for MariaDB port after start
+  ansible.builtin.wait_for:
+    host: "{{ tera_listen_address }}"
+    port: "{{ mariadb_port }}"
+    timeout: "{{ mariadb_port_timeout }}"
+  when:
+    - _mariadb_start is changed
+    - not ansible_check_mode

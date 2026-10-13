@@ -1,2 +1,49 @@
 ---
-[]
+# root@localhost stays unix_socket (ADR 0008): connect through the socket as OS root (become).
+- name: Manage MariaDB users and databases
+  module_defaults:
+    group/ansible.mysql.all:
+      login_user: root
+      login_unix_socket: "{{ _mariadb_socket }}"
+  block:
+    - name: Remove anonymous users
+      ansible.mysql.mysql_user:
+        name: ""
+        host_all: true
+        state: absent
+
+    - name: Remove test database
+      ansible.mysql.mysql_db:
+        name: test
+        state: absent
+
+    - name: Create admin user
+      ansible.mysql.mysql_user:
+        name: "{{ mariadb_admin_user }}"
+        host: "{{ mariadb_admin_host }}"
+        password: "{{ mariadb_admin_password }}"
+        priv: "*.*:ALL,GRANT"
+        state: present
+      no_log: true
+
+    - name: Manage databases
+      ansible.mysql.mysql_db:
+        name: "{{ item.name }}"
+        encoding: "{{ item.encoding | default(omit) }}"
+        collation: "{{ item.collation | default(omit) }}"
+        state: "{{ item.state | default('present') }}"
+      loop: "{{ mariadb_databases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Manage users
+      ansible.mysql.mysql_user:
+        name: "{{ item.name }}"
+        host: "{{ item.host | default('%') }}"
+        password: "{{ item.password | default(omit) }}"
+        priv: "{{ item.priv | default(omit) }}"
+        state: "{{ item.state | default('present') }}"
+      loop: "{{ mariadb_users }}"
+      loop_control:
+        label: "{{ item.name }}@{{ item.host | default('%') }}"
+      no_log: true

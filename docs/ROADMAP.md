@@ -23,7 +23,7 @@ Aturan:
 - [x] Role `common`
 - [x] Role `mariadb`: vars per OS + repo upstream + install
 - [x] `roles/mariadb/tasks/config.yml` (merge custom config → `99-tera.cnf`)
-- [ ] `standalone.yml` + `users.yml` (admin, hapus anonymous & database `test`, `mariadb_databases`, `mariadb_users`)
+- [x] `standalone.yml` + `users.yml` (admin, hapus anonymous & database `test`, `mariadb_databases`, `mariadb_users`)
 - [ ] Play rolling restart + `restart.yml`
 - [ ] Molecule `standalone`
 

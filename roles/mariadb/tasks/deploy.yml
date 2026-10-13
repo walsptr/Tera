@@ -10,3 +10,10 @@
 
 - name: Configure MariaDB
   ansible.builtin.import_tasks: config.yml
+
+- name: Start MariaDB (standalone)
+  ansible.builtin.include_tasks: standalone.yml
+  when: mariadb_cluster_mode == 'standalone'
+
+- name: Manage users and databases
+  ansible.builtin.include_tasks: users.yml
