@@ -1,8 +1,6 @@
 ---
-# Standalone scenario (docs/TESTING.md). One VM per run; the OS matrix is driven by TERA_BOX:
-#   for box in generic/ubuntu2204 cloud-image/ubuntu-24.04 generic/rocky9; do
-#     TERA_BOX=$box molecule test -s standalone
-#   done
+# Standalone scenario (docs/TESTING.md). One VM per run; the OS matrix and the pinned boxes
+# (TERA_BOX, TERA_BOX_VERSION, TERA_BOX_URL, TERA_BOX_CHECKSUM*) are listed in docs/TESTING.md.
 # Collections are installed once into ./collections (see AGENTS.md); no per-run download.
 dependency:
   name: galaxy
@@ -13,7 +11,11 @@ driver:
     name: libvirt
 platforms:
   - name: db01
-    box: ${TERA_BOX:-generic/ubuntu2204}
+    box: ${TERA_BOX:-cloud-image/ubuntu-22.04}
+    box_version: ${TERA_BOX_VERSION:-20260926.0.0}
+    box_url: ${TERA_BOX_URL}
+    box_download_checksum: ${TERA_BOX_CHECKSUM}
+    box_download_checksum_type: ${TERA_BOX_CHECKSUM_TYPE}
     memory: 2048
     cpus: 2
     groups:

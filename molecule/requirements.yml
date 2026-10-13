@@ -3,3 +3,5 @@
 collections:
   - name: containers.podman
     version: ">=1.16.0"
+  - name: community.vagrant
+    version: ">=0.1.0"
