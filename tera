@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# Tera CLI: thin wrapper around ansible-playbook. See docs/ARCHITECTURE.md ("CLI").
+set -euo pipefail
+
+TERA_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+PASSWORD_LENGTH=32
+DESTROY_FLAG="--yes-i-really-really-mean-it"
+
+usage() {
+  cat <<EOF
+Usage: tera <command> [options] [-- ansible-playbook args]
+
+Commands:
+  new-cluster <name>                 Create inventory/<name> from inventory/sample
+  genpwd      -i <cluster>           Fill empty keys in group_vars/all/passwords.yml
+  prechecks   -i <cluster> [args]    Validate inventory and nodes (no changes)
+  deploy      -i <cluster> [args]    Deploy or converge the cluster
+  reconfigure -i <cluster> [args]    Apply config changes, rolling restart if needed
+  recover     -i <cluster> [args]    Recover a Galera cluster after full outage
+  destroy     -i <cluster> ${DESTROY_FLAG} [args]
+
+<cluster> is a cluster folder (inventory/prod-a) or its hosts.yml.
+Any other argument is passed to ansible-playbook (e.g. --check --diff, --limit, -e k=v).
+EOF
+}
+
+die() {
+  echo "tera: $*" >&2
+  exit 1
+}
+
+# Sets CLUSTER_DIR and INVENTORY from a folder or hosts.yml path.
+resolve_inventory() {
+  local target="$1"
+  if [[ -d "$target" ]]; then
+    CLUSTER_DIR="$(cd "$target" && pwd)"
+    INVENTORY="$CLUSTER_DIR/hosts.yml"
+  elif [[ -f "$target" ]]; then
+    CLUSTER_DIR="$(cd "$(dirname "$target")" && pwd)"
+    INVENTORY="$CLUSTER_DIR/$(basename "$target")"
+  else
+    die "inventory '$target' tidak ditemukan. Buat dengan: ./tera new-cluster <nama>"
+  fi
+  [[ -f "$INVENTORY" ]] || die "$INVENTORY tidak ditemukan. Pastikan folder cluster berisi hosts.yml."
+}
+
+find_ansible_playbook() {
+  if command -v ansible-playbook >/dev/null 2>&1; then
+    command -v ansible-playbook
+  elif [[ -x "$TERA_ROOT/.venv/bin/ansible-playbook" ]]; then
+    echo "$TERA_ROOT/.venv/bin/ansible-playbook"
+  else
+    die "ansible-playbook tidak ditemukan. Ikuti 'Setup lingkungan dev' di AGENTS.md."
+  fi
+}
+
+cmd_new_cluster() {
+  [[ $# -eq 1 ]] || die "pemakaian: tera new-cluster <nama>"
+  local name="$1"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+    die "nama cluster '$name' tidak valid. Gunakan huruf, angka, '.', '_' atau '-'."
+  local dest="$TERA_ROOT/inventory/$name"
+  [[ ! -e "$dest" ]] || die "$dest sudah ada. Pilih nama lain atau hapus folder tersebut."
+
+  cp -R "$TERA_ROOT/inventory/sample" "$dest"
+  rm -rf "$dest/.facts_cache"
+  chmod 0600 "$dest/group_vars/all/passwords.yml"
+  cat <<EOF
+Cluster dibuat: inventory/$name
+Langkah berikutnya:
+  1. Edit inventory/$name/hosts.yml dan inventory/$name/group_vars/all/tera.yml
+  2. ./tera genpwd    -i inventory/$name
+  3. ansible-vault encrypt inventory/$name/group_vars/all/passwords.yml   (disarankan)
+  4. ./tera prechecks -i inventory/$name
+  5. ./tera deploy    -i inventory/$name
+EOF
+}
+
+gen_password() {
+  local pw=""
+  while [[ ${#pw} -lt $PASSWORD_LENGTH ]]; do
+    pw+="$(head -c 256 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9')"
+  done
+  printf '%s' "${pw:0:$PASSWORD_LENGTH}"
+}
+
+GENPWD_TMP=""
+
+cmd_genpwd() {
+  local file="$CLUSTER_DIR/group_vars/all/passwords.yml"
+  [[ -f "$file" ]] || die "$file tidak ditemukan."
+  local first=""
+  IFS= read -r first <"$file" || true
+  if [[ "$first" == \$ANSIBLE_VAULT* ]]; then
+    die "$file terenkripsi vault. Jalankan 'ansible-vault decrypt $file', ulangi genpwd, lalu encrypt lagi."
+  fi
+
+  local lines=()
+  mapfile -t lines <"$file"
+  # Only top-level keys with an empty value are filled; existing values are never touched.
+  local empty_re='^([A-Za-z_][A-Za-z0-9_]*):[[:space:]]*(""|'"''"'|~|null)?[[:space:]]*$'
+  local i j next key filled=()
+  GENPWD_TMP="$(mktemp "$file.XXXXXX")"
+  trap 'rm -f "$GENPWD_TMP"' EXIT
+  for ((i = 0; i < ${#lines[@]}; i++)); do
+    if [[ "${lines[i]}" =~ $empty_re ]]; then
+      key="${BASH_REMATCH[1]}"
+      # A key followed by an indented line is a mapping/list parent, not an empty value.
+      next=""
+      for ((j = i + 1; j < ${#lines[@]}; j++)); do
+        [[ "${lines[j]}" =~ ^[[:space:]]*(#.*)?$ ]] && continue
+        next="${lines[j]}"
+        break
+      done
+      if [[ "$next" =~ ^[[:space:]-] ]]; then
+        printf '%s\n' "${lines[i]}" >>"$GENPWD_TMP"
+      else
+        printf '%s: "%s"\n' "$key" "$(gen_password)" >>"$GENPWD_TMP"
+        filled+=("$key")
+      fi
+    else
+      printf '%s\n' "${lines[i]}" >>"$GENPWD_TMP"
+    fi
+  done
+
+  if [[ ${#filled[@]} -eq 0 ]]; then
+    echo "Tidak ada key kosong di $file; tidak ada yang diubah."
+    return 0
+  fi
+  chmod 0600 "$GENPWD_TMP"
+  mv "$GENPWD_TMP" "$file"
+  echo "Password dibuat untuk: ${filled[*]}"
+  echo "Disarankan: ansible-vault encrypt $file"
+}
+
+run_playbook() {
+  local playbook="$1"
+  shift
+  export ANSIBLE_CONFIG="$TERA_ROOT/ansible.cfg"
+  # Per-cluster fact cache: hostnames may be identical across clusters.
+  export ANSIBLE_CACHE_PLUGIN_CONNECTION="$CLUSTER_DIR/.facts_cache"
+  local ap
+  ap="$(find_ansible_playbook)"
+  exec "$ap" -i "$INVENTORY" "$TERA_ROOT/$playbook" "$@"
+}
+
+main() {
+  [[ $# -ge 1 ]] || {
+    usage
+    exit 1
+  }
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    -h | --help | help)
+      usage
+      return 0
+      ;;
+    new-cluster)
+      cmd_new_cluster "$@"
+      return 0
+      ;;
+    genpwd | prechecks | deploy | reconfigure | recover | destroy) ;;
+    *)
+      usage >&2
+      die "perintah tidak dikenal: $cmd"
+      ;;
+  esac
+
+  local target="" confirm=false
+  local extra=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -i | --inventory)
+        [[ $# -ge 2 ]] || die "-i butuh argumen folder cluster"
+        target="$2"
+        shift 2
+        ;;
+      "$DESTROY_FLAG")
+        confirm=true
+        shift
+        ;;
+      --)
+        shift
+        extra+=("$@")
+        break
+        ;;
+      *)
+        extra+=("$1")
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$target" ]] || die "$cmd butuh -i inventory/<cluster>"
+  resolve_inventory "$target"
+
+  case "$cmd" in
+    genpwd)
+      [[ ${#extra[@]} -eq 0 ]] || die "genpwd tidak menerima argumen tambahan: ${extra[*]}"
+      cmd_genpwd
+      ;;
+    prechecks | deploy | reconfigure)
+      run_playbook site.yml -e "tera_action=$cmd" ${extra[@]+"${extra[@]}"}
+      ;;
+    recover)
+      run_playbook playbooks/mariadb-recover.yml ${extra[@]+"${extra[@]}"}
+      ;;
+    destroy)
+      $confirm || die "destroy menghapus data. Ulangi dengan flag $DESTROY_FLAG jika yakin."
+      run_playbook playbooks/destroy.yml -e tera_destroy_confirm=true ${extra[@]+"${extra[@]}"}
+      ;;
+  esac
+}
+
+main "$@"

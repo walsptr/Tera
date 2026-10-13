@@ -69,6 +69,11 @@ Perilaku CLI:
 - Argumen lain diteruskan apa adanya ke `ansible-playbook`.
 - Aman untuk array kosong di bash `set -u`.
 - `genpwd` hanya mengisi key yang kosong, tidak menimpa yang sudah ada, dan tidak bergantung pada PyYAML.
+  Password berupa 32 karakter alfanumerik (`A-Za-z0-9`) agar aman dipakai di file `.cnf`, auth HAProxy stats,
+  dan YAML. Key top-level dianggap kosong jika nilainya kosong, `""`, `''`, `~`, atau `null` dan baris
+  berikutnya tidak menjorok (bukan parent mapping/list). File yang terenkripsi vault ditolak.
+- `new-cluster <nama>` membuat `inventory/<nama>` (nama: huruf, angka, `.`, `_`, `-`) dan menolak jika sudah ada.
+- `destroy` ditolak tanpa flag `--yes-i-really-really-mean-it`.
 
 ## Alur play `site.yml`
 
