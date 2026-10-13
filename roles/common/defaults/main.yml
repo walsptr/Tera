@@ -1,0 +1,10 @@
+---
+# Supported targets (docs/ARCHITECTURE.md). Do not extend without discussion.
+common_supported_os:
+  Ubuntu:
+    - "22.04"
+    - "24.04"
+  Rocky:
+    - "9"
+  AlmaLinux:
+    - "9"

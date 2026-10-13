@@ -1,0 +1,4 @@
+---
+_common_packages:
+  - ca-certificates
+  - python3-libselinux

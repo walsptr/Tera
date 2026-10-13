@@ -1,0 +1,5 @@
+---
+# python3-debian is required by ansible.builtin.deb822_repository (MariaDB upstream repo).
+_common_packages:
+  - ca-certificates
+  - python3-debian

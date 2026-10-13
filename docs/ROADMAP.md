@@ -20,7 +20,7 @@ Aturan:
 - [x] CLI `tera`: `new-cluster`, `genpwd`, `prechecks`, `deploy`, `reconfigure`, fact cache per cluster
 - [x] `inventory/sample` dengan contoh config yang dikomentari
 - [x] `playbooks/facts.yml` (`tera_listen_address`)
-- [ ] Role `common`
+- [x] Role `common`
 - [ ] Role `mariadb`: vars per OS + repo upstream + install
 - [ ] `roles/mariadb/tasks/config.yml` (merge custom config → `99-tera.cnf`)
 - [ ] `standalone.yml` + `users.yml` (admin, hapus anonymous & database `test`, `mariadb_databases`, `mariadb_users`)

@@ -1,2 +1,21 @@
 ---
-[]
+- name: Check operating system is supported
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] in common_supported_os
+      - _common_os_version in common_supported_os[ansible_facts['distribution']]
+    fail_msg: >-
+      {{ inventory_hostname }}: OS {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+      tidak didukung. Gunakan Ubuntu 22.04/24.04, Rocky Linux 9, atau AlmaLinux 9.
+    quiet: true
+  vars:
+    _common_os_version: >-
+      {{ ansible_facts['distribution_version'] if ansible_facts['distribution'] == 'Ubuntu'
+         else ansible_facts['distribution_major_version'] }}
+
+- name: Check service manager is systemd
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: "{{ inventory_hostname }}: Tera membutuhkan systemd (terdeteksi {{ ansible_facts['service_mgr'] }})."
+    quiet: true
