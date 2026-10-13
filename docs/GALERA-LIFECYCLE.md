@@ -1,0 +1,127 @@
+# Galera Lifecycle
+
+> **Wajib dibaca** sebelum mengubah task Galera (`status.yml`, `galera.yml`, `restart.yml`,
+> `recover.yml`, `wait_synced.yml`). Jika implementasi berbeda dari dokumen ini, **dokumen ini yang benar**.
+> Perubahan perilaku hanya lewat ADR baru di `docs/decisions/`.
+
+## Istilah
+
+| Istilah | Arti |
+|---|---|
+| Primary | `wsrep_cluster_status = Primary` — node berada di komponen yang punya quorum |
+| Synced | `wsrep_local_state_comment = Synced` (`wsrep_local_state = 4`) |
+| Marker | file `/etc/tera/mariadb-galera.bootstrapped`; tanda cluster pernah di-bootstrap oleh Tera |
+| Bootstrap host | `mariadb_bootstrap_host` (default `groups['mariadb'][0]`) |
+| grastate | `grastate.dat` di datadir: `uuid`, `seqno`, `safe_to_bootstrap` |
+
+## Status (`status.yml`)
+
+Read-only, semua query memakai `check_mode: false`. Fact per host (semua boolean, di-set dengan `| bool`):
+
+| Fact | Sumber |
+|---|---|
+| `_mariadb_running` | `service_facts` |
+| `_mariadb_wsrep_primary` | running AND `wsrep_cluster_status = Primary` |
+| `_mariadb_bootstrapped_marker` | `stat` marker |
+
+Agregat dihitung **di setiap host** dari `ansible_play_hosts` (bukan `run_once` + `set_fact`):
+
+- `_galera_cluster_alive` — ada minimal satu host dengan `_mariadb_wsrep_primary`.
+- `_galera_ever_bootstrapped` — ada minimal satu host dengan `_mariadb_bootstrapped_marker`.
+
+## Prasyarat deploy
+
+- Jumlah node >= `mariadb_galera_min_nodes` (jumlah genap → warning, karena rawan split brain).
+- Tanpa `--limit` (`ansible_play_hosts_all` == `groups['mariadb']`).
+- Password SST dan clustercheck terisi.
+
+## Tabel keputusan
+
+Dievaluasi setelah config ditulis, sebelum start/restart.
+
+| Cluster alive | Marker ada | Aksi |
+|---|---|---|
+| tidak | tidak | Fresh bootstrap |
+| tidak | ya | **FAIL** → arahkan ke `tera recover` |
+| ya | apa saja | Join node yang tidak Primary |
+
+## Fresh bootstrap
+
+1. Stop mariadb di semua node.
+2. `galera_new_cluster` di bootstrap host.
+3. Tunggu Synced di bootstrap host.
+4. Jalankan `users.yml` di bootstrap host, terutama user SST.
+5. Node lain `start` dengan `throttle: 1`.
+6. Semua node tunggu Synced.
+7. Enable service; tulis marker dengan `force: false`.
+8. Set `mariadb_restart_required: false`.
+
+## Join
+
+1. Node yang tidak Primary di-restart dengan `throttle: 1`.
+2. Tunggu Synced.
+3. Tulis marker.
+4. Set `mariadb_restart_required: false`.
+5. Setelah itu `users.yml` dijalankan di bootstrap host.
+
+## Rolling restart
+
+- Hanya node dengan `mariadb_restart_required`.
+- Urutan per node: restart → `wait_for` port di `tera_listen_address` → (mode galera) tunggu Synced → reset flag.
+- Jika satu node gagal, run berhenti; node lain tidak disentuh (`serial: 1`, `max_fail_percentage: 0`).
+- Tidak memakai handler.
+
+## Reconfigure
+
+1. Prechecks.
+2. Tulis config di semua node **tanpa** restart.
+3. Users + clustercheck.
+4. Rolling restart.
+
+`--limit` diperbolehkan untuk reconfigure.
+
+## Scale out dan scale in
+
+**Scale out:** tambah host ke inventory → `tera deploy` tanpa `--limit` → node baru join via SST,
+node lama di-rolling restart karena `wsrep_cluster_address` berubah, HAProxy di-reload.
+
+**Scale in** (manual untuk sekarang): stop node, hapus dari inventory, lalu `tera reconfigure`.
+
+## Recover
+
+Prasyarat: mode galera dan **tidak ada** node Primary. Jika ada node Primary → FAIL, arahkan ke `tera deploy`.
+
+Langkah:
+
+1. Stop mariadb di semua node.
+2. Baca `grastate.dat` di setiap node.
+3. Jika `seqno == -1`: jalankan `mariadbd --user=mysql --wsrep-recover --log-error=<tmp>`,
+   ambil seqno dari baris `WSREP: Recovered position: <uuid>:<seqno>`, lalu hapus log sementara.
+4. Jika `uuid` berbeda antar node → FAIL, kecuali `mariadb_recover_from` diset.
+5. Pilih node bootstrap dengan prioritas:
+   1. `mariadb_recover_from`
+   2. node pertama dengan `safe_to_bootstrap: 1`
+   3. seqno tertinggi (seri: urutan inventory)
+6. Tampilkan ringkasan (per node: uuid, seqno, safe_to_bootstrap, node terpilih).
+7. Di node terpilih: set `safe_to_bootstrap: 1`, `galera_new_cluster`, tunggu Synced.
+8. Node lain start dengan `throttle: 1`, tunggu Synced.
+9. Pastikan marker ada di semua node.
+
+## Timeout
+
+| Variabel | Default |
+|---|---|
+| `mariadb_wait_retries` | `120` |
+| `mariadb_wait_delay` | `5` |
+| `mariadb_port_timeout` | `300` |
+
+SST untuk data besar bisa butuh nilai yang lebih tinggi; naikkan di `group_vars` cluster.
+
+## Yang tidak boleh terjadi
+
+- Auto bootstrap cluster lama.
+- Lebih dari satu node restart bersamaan.
+- Node berikutnya restart sebelum node sebelumnya Synced.
+- Joiner start sebelum user SST ada.
+- Marker hilang karena SST.
+- Restart pada run tanpa perubahan config.

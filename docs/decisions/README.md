@@ -1,0 +1,40 @@
+# Architecture Decision Records (ADR)
+
+Keputusan desain Tera dicatat di sini.
+
+## Aturan
+
+- ADR berstatus `Accepted` **tidak diubah** isinya (kecuali typo).
+- Untuk mengubah keputusan, buat ADR baru yang menyebut `Supersedes NNNN`, lalu ubah status ADR lama menjadi `Superseded by MMMM`.
+- Perubahan kode yang bertentangan dengan ADR `Accepted` harus didahului ADR baru dan diskusi.
+- Nama file: `NNNN-judul-singkat.md`, nomor berurutan.
+
+## Template
+
+```markdown
+# NNNN. Judul keputusan
+
+- **Status:** Proposed | Accepted | Supersedes NNNN | Superseded by NNNN
+- **Tanggal:** YYYY-MM-DD
+
+## Konteks
+
+## Keputusan
+
+## Alternatif yang ditolak
+
+## Konsekuensi
+```
+
+## Daftar
+
+| No | Keputusan | Status |
+|---|---|---|
+| [0001](0001-inventory-per-cluster.md) | Satu cluster satu folder inventory | Accepted |
+| [0002](0002-custom-config-merge-ini.md) | Custom config via merge_ini ke satu file 99-tera.cnf | Accepted |
+| [0003](0003-galera-first-ha.md) | Galera sebagai HA pertama | Accepted |
+| [0004](0004-haproxy-single-writer.md) | HAProxy single_writer sebagai default | Accepted |
+| [0005](0005-clustercheck-systemd-socket.md) | Health check tera-clustercheck via systemd socket | Accepted |
+| [0006](0006-no-auto-bootstrap.md) | Tidak ada auto bootstrap cluster lama | Accepted |
+| [0007](0007-rolling-restart-play.md) | Rolling restart lewat play serial: 1, bukan handler | Accepted |
+| [0008](0008-root-unix-socket.md) | Root MariaDB via unix_socket, admin remote terpisah | Accepted |

@@ -1,0 +1,17 @@
+# Local agent instructions
+CLAUDE.local.md
+
+# Per-cluster fact cache
+inventory/*/.facts_cache/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Ansible / Molecule
+*.retry
+.molecule/
+.cache/
