@@ -115,6 +115,7 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 |---|---|
 | `tera_config_dir` | `{{ inventory_dir }}/config` |
 | `tera_state_dir` | `/etc/tera` |
+| `mariadb_restart_marker` | `{{ tera_state_dir }}/mariadb-restart-pending` |
 | `tera_network_interface` | `""` |
 | `mariadb_cluster_mode` | `standalone` |
 | `mariadb_version` | `"11.4"` |
@@ -182,6 +183,7 @@ Selama Fase 1, prechecks menolak `mariadb_cluster_mode: galera` (belum diimpleme
 | Config MariaDB | `99-tera.cnf` di `/etc/mysql/mariadb.conf.d/` (Debian) atau `/etc/my.cnf.d/` (RHEL), `0640 root:mysql` |
 | State Tera | `/etc/tera/` (`0750 root:mysql`) |
 | Marker bootstrap | `/etc/tera/mariadb-galera.bootstrapped` |
+| Restart pending marker | `/etc/tera/mariadb-restart-pending` (`0640 root:mysql`, ADR 0009) |
 | Kredensial clustercheck | `/etc/tera/clustercheck.cnf` (`0640 root:mysql`) |
 | Script clustercheck | `/usr/local/bin/tera-clustercheck` |
 | Unit systemd | `tera-clustercheck.socket`, `tera-clustercheck@.service` |

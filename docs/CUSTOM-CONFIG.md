@@ -340,7 +340,9 @@ wsrep_on = ON
 
 ## Integrasi dengan reconfigure
 
-- Jika `99-tera.cnf` berubah, node ditandai `mariadb_restart_required: true` dan di-restart oleh play rolling restart.
+- Jika `99-tera.cnf` berubah, restart pending marker ditulis lebih dulu, node ditandai
+  `mariadb_restart_required: true`, dan di-restart oleh play rolling restart. Jika run terputus sebelum
+  restart, marker membuat run berikutnya tetap me-restart (ADR 0009).
 - `tera reconfigure --check --diff` menampilkan diff tanpa mengubah apa pun.
   **Peringatan:** diff bisa menampilkan `wsrep_sst_auth` (password SST).
 - Perubahan di `config/mariadb/<host>/` hanya me-restart host tersebut.

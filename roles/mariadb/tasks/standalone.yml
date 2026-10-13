@@ -6,7 +6,13 @@
   register: _mariadb_start
 
 # A service started just now already runs with the current 99-tera.cnf:
-# skip the rolling restart to avoid a double restart.
+# clear the pending marker and skip the rolling restart to avoid a double restart.
+- name: Remove restart pending marker when MariaDB was just started # noqa: no-handler
+  ansible.builtin.file:
+    path: "{{ mariadb_restart_marker }}"
+    state: absent
+  when: _mariadb_start is changed
+
 - name: Clear restart flag when MariaDB was just started
   ansible.builtin.set_fact:
     mariadb_restart_required: "{{ (mariadb_restart_required | default(false) | bool) and not (_mariadb_start is changed) }}"

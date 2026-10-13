@@ -1,0 +1,78 @@
+---
+# ADR 0009 test: a run interrupted after 99-tera.cnf was written must still restart next time.
+# Sequence: idempotence -> side_effect (this) -> converge -> verify.
+
+- name: Add a pending config change
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Write extra custom config file
+      ansible.builtin.copy:
+        content: |
+          # Molecule side effect: change applied by an interrupted run
+          [mysqld]
+          max_connections = 543
+        dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/db01/zz-pending.cnf"
+        mode: "0644"
+
+- name: Compute facts
+  ansible.builtin.import_playbook: ../../playbooks/facts.yml
+
+- name: Run config in check mode
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  check_mode: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run mariadb config tasks in check mode
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: "{{ item }}"
+      loop:
+        - vars.yml
+        - config.yml
+
+- name: Simulate a run interrupted after the config was written
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Check marker was not written by the check mode run
+      ansible.builtin.stat:
+        path: "{{ mariadb_restart_marker }}"
+      register: _se_marker_before
+
+    - name: Assert check mode left no marker
+      ansible.builtin.assert:
+        that:
+          - not _se_marker_before.stat.exists
+
+    - name: Run mariadb config tasks only (no restart play follows)
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: "{{ item }}"
+      loop:
+        - vars.yml
+        - config.yml
+
+    - name: Check marker after interrupted run
+      ansible.builtin.stat:
+        path: "{{ mariadb_restart_marker }}"
+      register: _se_marker_after
+
+    - name: Read running max_connections
+      ansible.builtin.command:
+        cmd: mariadb -N -e "SELECT @@max_connections"
+      register: _se_running
+      changed_when: false
+
+    - name: Assert config is pending, not yet active
+      ansible.builtin.assert:
+        that:
+          - _se_marker_after.stat.exists
+          - _se_running.stdout | trim | int == 432

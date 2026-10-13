@@ -20,6 +20,12 @@
   ansible.builtin.include_tasks: wait_synced.yml
   when: mariadb_cluster_mode == 'galera'
 
+# Only after the node is back (port open, Synced for galera): ADR 0009.
+- name: Remove restart pending marker
+  ansible.builtin.file:
+    path: "{{ mariadb_restart_marker }}"
+    state: absent
+
 - name: Clear restart flag
   ansible.builtin.set_fact:
     mariadb_restart_required: false

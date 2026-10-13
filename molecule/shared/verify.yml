@@ -9,9 +9,19 @@
     - name: Load MariaDB OS variables
       ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
 
-    - name: Determine listen address
+    - name: Determine listen address and expected config
       ansible.builtin.set_fact:
         _verify_address: "{{ tera_listen_address | default(ip | default(ansible_facts['default_ipv4']['address'])) }}"
+        # side_effect.yml adds zz-pending.cnf (ADR 0009 test); plain converge does not.
+        _verify_pending_applied: >-
+          {{ lookup('ansible.builtin.fileglob', tera_config_dir ~ '/mariadb/db01/zz-pending.cnf') | length > 0 }}
+
+    - name: Set expected values
+      ansible.builtin.set_fact:
+        _verify_max_connections: "{{ 543 if _verify_pending_applied | bool else 432 }}"
+        _verify_sources: >-
+          {{ 'role:tera.cnf.j2, mariadb/tuning.cnf, mariadb/db01/host.cnf'
+             ~ (', mariadb/db01/zz-pending.cnf' if _verify_pending_applied | bool else '') }}
 
     - name: Collect service facts
       ansible.builtin.service_facts:
@@ -31,8 +41,8 @@
       ansible.builtin.assert:
         that:
           - _verify_text.startswith('# Managed by Tera - JANGAN edit manual\n')
-          - "'# Sources: role:tera.cnf.j2, mariadb/tuning.cnf, mariadb/db01/host.cnf\n' in _verify_text"
-          - "'max_connections = 432\n' in _verify_text"
+          - "('# Sources: ' ~ _verify_sources ~ '\n') in _verify_text"
+          - "('max_connections = ' ~ _verify_max_connections ~ '\n') in _verify_text"
       vars:
         _verify_text: "{{ _verify_cnf['content'] | b64decode }}"
 
@@ -53,8 +63,18 @@
     - name: Check server state
       ansible.builtin.assert:
         that:
-          - _verify_query.query_result[0][0]['max_connections'] | int == 432
+          - _verify_query.query_result[0][0]['max_connections'] | int == _verify_max_connections | int
           - _verify_query.query_result[0][0]['bind_address'] == _verify_address
           - _verify_query.query_result[1][0]['n'] | int == 0
           - _verify_query.query_result[2][0]['n'] | int == 0
           - _verify_query.query_result[3][0]['n'] | int == 1
+
+    - name: Check restart pending marker
+      ansible.builtin.stat:
+        path: "{{ tera_state_dir }}/mariadb-restart-pending"
+      register: _verify_marker
+
+    - name: Check no restart is pending
+      ansible.builtin.assert:
+        that:
+          - not _verify_marker.stat.exists

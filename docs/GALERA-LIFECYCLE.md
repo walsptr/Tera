@@ -11,6 +11,7 @@
 | Primary | `wsrep_cluster_status = Primary` — node berada di komponen yang punya quorum |
 | Synced | `wsrep_local_state_comment = Synced` (`wsrep_local_state = 4`) |
 | Marker | file `/etc/tera/mariadb-galera.bootstrapped`; tanda cluster pernah di-bootstrap oleh Tera |
+| Restart pending marker | file `/etc/tera/mariadb-restart-pending` (`mariadb_restart_marker`); ada = config baru belum aktif (ADR 0009) |
 | Bootstrap host | `mariadb_bootstrap_host` (default `groups['mariadb'][0]`) |
 | grastate | `grastate.dat` di datadir: `uuid`, `seqno`, `safe_to_bootstrap` |
 
@@ -54,20 +55,31 @@ Dievaluasi setelah config ditulis, sebelum start/restart.
 5. Node lain `start` dengan `throttle: 1`.
 6. Semua node tunggu Synced.
 7. Enable service; tulis marker dengan `force: false`.
-8. Set `mariadb_restart_required: false`.
+8. Hapus restart pending marker (service baru menyala dengan config terbaru) dan set `mariadb_restart_required: false`.
 
 ## Join
 
 1. Node yang tidak Primary di-restart dengan `throttle: 1`.
 2. Tunggu Synced.
 3. Tulis marker.
-4. Set `mariadb_restart_required: false`.
+4. Hapus restart pending marker dan set `mariadb_restart_required: false`.
 5. Setelah itu `users.yml` dijalankan di bootstrap host.
+
+## Restart pending marker (ADR 0009)
+
+- `config.yml` mendeteksi perubahan `99-tera.cnf` dengan `copy` `check_mode: true`. Jika akan berubah,
+  restart pending marker ditulis **sebelum** file config ditulis. Pada run `--check` marker tidak ditulis.
+- `config.yml` lalu membaca marker: `mariadb_restart_required` = flag lama OR file berubah OR marker ada.
+  Dengan begitu run yang terputus setelah config ditulis tetap me-restart pada run `deploy`/`reconfigure`
+  berikutnya. Action `prechecks` tidak pernah me-restart.
+- Marker dihapus hanya oleh: rolling restart yang sukses (port terbuka, dan Synced untuk galera), start
+  pertama standalone, serta bootstrap/join galera (service menyala dengan config terbaru).
 
 ## Rolling restart
 
-- Hanya node dengan `mariadb_restart_required`.
-- Urutan per node: restart → `wait_for` port di `tera_listen_address` → (mode galera) tunggu Synced → reset flag.
+- Hanya node dengan `mariadb_restart_required` (termasuk node yang punya restart pending marker).
+- Urutan per node: restart → `wait_for` port di `tera_listen_address` → (mode galera) tunggu Synced →
+  hapus restart pending marker → reset flag.
 - Jika satu node gagal, run berhenti; node lain tidak disentuh (`serial: 1`, `max_fail_percentage: 0`).
 - Tidak memakai handler.
 
@@ -124,4 +136,5 @@ SST untuk data besar bisa butuh nilai yang lebih tinggi; naikkan di `group_vars`
 - Node berikutnya restart sebelum node sebelumnya Synced.
 - Joiner start sebelum user SST ada.
 - Marker hilang karena SST.
-- Restart pada run tanpa perubahan config.
+- Restart pada run tanpa perubahan config (dan tanpa restart pending marker).
+- Config baru yang sudah ditulis tidak pernah aktif karena run sebelumnya terputus.

@@ -14,6 +14,9 @@ tera_valid_actions:
 tera_config_dir: "{{ inventory_dir }}/config"
 # Tera markers and state on the nodes. Never inside the datadir (SST overwrites it).
 tera_state_dir: /etc/tera
+# Restart pending marker (ADR 0009): written before 99-tera.cnf changes, removed after a
+# successful restart or a fresh start with the current config.
+mariadb_restart_marker: "{{ tera_state_dir }}/mariadb-restart-pending"
 
 # --- Network ----------------------------------------------------------------
 # Interface used to derive tera_listen_address when host var `ip` is not set.

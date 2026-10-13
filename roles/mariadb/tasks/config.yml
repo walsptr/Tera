@@ -1,6 +1,7 @@
 ---
 # Merge order (later wins): role template -> config/mariadb/*.cnf -> config/mariadb/<host>/*.cnf.
-# Spec: docs/CUSTOM-CONFIG.md. Never restarts MariaDB; only sets mariadb_restart_required.
+# Spec: docs/CUSTOM-CONFIG.md. Never restarts MariaDB; only sets mariadb_restart_required and the
+# restart pending marker (ADR 0009).
 
 - name: Create Tera state directory
   ansible.builtin.file:
@@ -32,6 +33,28 @@
     _mariadb_cnf: "{{ lookup('ansible.builtin.template', 'tera.cnf.j2') | merge_ini(_mariadb_custom_sources) }}"
   no_log: true
 
+- name: Check whether 99-tera.cnf would change
+  ansible.builtin.copy:
+    content: "{{ _mariadb_cnf }}"
+    dest: "{{ _mariadb_config_dir }}/99-tera.cnf"
+    owner: root
+    group: mysql
+    mode: "0640"
+  check_mode: true
+  diff: false
+  register: _mariadb_cnf_check
+
+# Written BEFORE the config so an interrupted run still restarts next time (ADR 0009).
+# Not a handler: it must run before the next task. Not written in --check (task runs in check mode).
+- name: Write restart pending marker # noqa: no-handler
+  ansible.builtin.copy:
+    content: "99-tera.cnf changed; MariaDB restart pending. Managed by Tera.\n"
+    dest: "{{ mariadb_restart_marker }}"
+    owner: root
+    group: mysql
+    mode: "0640"
+  when: _mariadb_cnf_check is changed
+
 - name: Write 99-tera.cnf
   ansible.builtin.copy:
     content: "{{ _mariadb_cnf }}"
@@ -41,7 +64,15 @@
     mode: "0640"
   register: _mariadb_cnf_result
 
+- name: Check restart pending marker
+  ansible.builtin.stat:
+    path: "{{ mariadb_restart_marker }}"
+  register: _mariadb_restart_marker_stat
+
 # Consumed by the rolling restart play (ADR 0007), never by a handler.
-- name: Mark MariaDB for restart when config changed
+- name: Mark MariaDB for restart when config changed or a restart is pending
   ansible.builtin.set_fact:
-    mariadb_restart_required: "{{ (mariadb_restart_required | default(false) | bool) or (_mariadb_cnf_result is changed) }}"
+    mariadb_restart_required: >-
+      {{ (mariadb_restart_required | default(false) | bool)
+         or (_mariadb_cnf_result is changed)
+         or _mariadb_restart_marker_stat.stat.exists }}

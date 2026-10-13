@@ -60,7 +60,7 @@ Playbook converge/verify/prepare dipakai bersama di `molecule/shared/`.
 
 | Skenario | Verify |
 |---|---|
-| `standalone`, `standalone-podman` | service aktif; login admin via TCP; user anonymous & database `test` tidak ada; header Tera ada di `99-tera.cnf` |
+| `standalone`, `standalone-podman` | service aktif; login admin via TCP; user anonymous & database `test` tidak ada; header Tera ada di `99-tera.cnf`; config per host aktif. Side effect (ADR 0009): run `--check` tidak menulis restart pending marker; run yang terputus setelah config ditulis meninggalkan marker dan config belum aktif; `converge` berikutnya me-restart, config aktif, marker hilang |
 | `galera` (3 node, LB colocated) | cluster size 3; semua Synced; marker ada; tulis di node 1 terbaca di node 3; login via VIP; clustercheck 200 |
 | `reconfigure` | config global aktif di semua node dengan restart berurutan; config per host hanya me-restart host itu; run ulang tanpa restart |
 | `recover` | `kill -9` semua node → deploy FAIL dengan pesan recover → `tera recover` → size 3, data yang sudah commit utuh |
