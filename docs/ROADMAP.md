@@ -16,7 +16,7 @@ Aturan:
 ## Fase 1 — Core + MariaDB standalone
 
 - [ ] Role `tera_defaults`
-- [ ] Filter `merge_ini` + test CC-01..CC-10
+- [x] Filter `merge_ini` + test CC-01..CC-10
 - [ ] CLI `tera`: `new-cluster`, `genpwd`, `prechecks`, `deploy`, `reconfigure`, fact cache per cluster
 - [ ] `inventory/sample` dengan contoh config yang dikomentari
 - [ ] `playbooks/facts.yml` (`tera_listen_address`)

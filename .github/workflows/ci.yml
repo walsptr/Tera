@@ -55,5 +55,4 @@ jobs:
       - name: Install dev requirements
         run: pip install -r requirements-dev.txt
       - name: pytest
-        # Exit code 5 = no tests collected (allowed until merge_ini tests exist)
-        run: pytest plugins/ || [ $? -eq 5 ]
+        run: pytest plugins/
