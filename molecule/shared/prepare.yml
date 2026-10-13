@@ -1,0 +1,13 @@
+---
+# Copy the scenario custom config to the ephemeral directory so tests can change it
+# without touching the repository (tera_config_dir points there).
+- name: Prepare custom config
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Copy custom config to ephemeral directory
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/config/"
+        dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/"
+        mode: preserve

@@ -45,6 +45,7 @@ Semua alat dipasang lokal di root repo (`.venv/` dan `collections/`, keduanya di
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/ansible-galaxy collection install -r requirements.yml -p ./collections
+.venv/bin/ansible-galaxy collection install -r molecule/requirements.yml -p ./collections   # test only
 source .venv/bin/activate        # atau panggil .venv/bin/<alat> langsung
 ```
 
@@ -54,7 +55,7 @@ source .venv/bin/activate        # atau panggil .venv/bin/<alat> langsung
 ansible-lint
 ansible-playbook -i inventory/sample/hosts.yml site.yml --syntax-check
 pytest plugins/
-molecule test -s <scenario>        # standalone | galera | reconfigure | recover | scale
+molecule test -s <scenario>        # standalone | standalone-podman | galera | reconfigure | recover | scale
 
 ./tera new-cluster prod-a
 ./tera genpwd      -i inventory/prod-a

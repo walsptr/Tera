@@ -1,0 +1,12 @@
+# Systemd-enabled test image for the standalone-podman scenario. Built by Molecule.
+FROM {{ item.image }}
+{% if 'ubuntu' in item.image %}
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       systemd systemd-sysv python3 sudo iproute2 ca-certificates \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+{% else %}
+RUN dnf -y install systemd python3 sudo iproute && dnf clean all
+{% endif %}
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

@@ -38,9 +38,29 @@ lint, syntax-check, dan pytest.
   Nama box di atas perlu dikonfirmasi tersedia untuk provider libvirt.
 - Password test dibuat saat run di direktori ephemeral Molecule (tidak ada secret di repo).
 
+### `standalone-podman` (pelengkap cepat)
+
+Skenario `standalone-podman` menjalankan playbook yang sama (`molecule/shared/`) di container podman
+rootless dengan systemd, image dibangun sendiri dari `molecule/standalone-podman/Dockerfile.j2`.
+Ini **pelengkap cepat, bukan pengganti VM**: Galera, Keepalived, sysctl, dan SELinux tetap wajib diuji
+di VM. Juga dijalankan di CI (job `molecule-podman`).
+
+```bash
+for image in docker.io/library/ubuntu:22.04 docker.io/library/ubuntu:24.04 docker.io/rockylinux/rockylinux:9; do
+  TERA_PODMAN_IMAGE=$image molecule test -s standalone-podman
+done
+```
+
+Catatan: podman rootless menyalin IP host ke setiap container, sehingga skenario multi-node tidak bisa
+memakai pola ini.
+
+### Skenario
+
+Playbook converge/verify/prepare dipakai bersama di `molecule/shared/`.
+
 | Skenario | Verify |
 |---|---|
-| `standalone` | service aktif; login admin via TCP; user anonymous & database `test` tidak ada; header Tera ada di `99-tera.cnf` |
+| `standalone`, `standalone-podman` | service aktif; login admin via TCP; user anonymous & database `test` tidak ada; header Tera ada di `99-tera.cnf` |
 | `galera` (3 node, LB colocated) | cluster size 3; semua Synced; marker ada; tulis di node 1 terbaca di node 3; login via VIP; clustercheck 200 |
 | `reconfigure` | config global aktif di semua node dengan restart berurutan; config per host hanya me-restart host itu; run ulang tanpa restart |
 | `recover` | `kill -9` semua node → deploy FAIL dengan pesan recover → `tera recover` → size 3, data yang sudah commit utuh |

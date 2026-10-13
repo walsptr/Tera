@@ -1,0 +1,59 @@
+---
+# Fast complement to the VM scenarios: systemd containers via rootless podman.
+# NOT a replacement for VMs (see docs/TESTING.md). One container per run; OS via TERA_PODMAN_IMAGE:
+#   for image in docker.io/library/ubuntu:22.04 docker.io/library/ubuntu:24.04 docker.io/rockylinux/rockylinux:9; do
+#     TERA_PODMAN_IMAGE=$image molecule test -s standalone-podman
+#   done
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+platforms:
+  - name: db01
+    image: ${TERA_PODMAN_IMAGE:-docker.io/library/ubuntu:22.04}
+    dockerfile: Dockerfile.j2
+    pre_build_image: false
+    command: /sbin/init
+    systemd: always
+    groups:
+      - mariadb
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+    ANSIBLE_FILTER_PLUGINS: ${MOLECULE_PROJECT_DIRECTORY}/plugins/filter
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/collections
+  playbooks:
+    prepare: ../shared/prepare.yml
+    converge: ../shared/converge.yml
+    verify: ../shared/verify.yml
+  inventory:
+    group_vars:
+      all:
+        tera_action: deploy
+        tera_config_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/config
+        # Test-only password, generated outside the repo in the ephemeral directory.
+        mariadb_admin_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/admin_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_admin_hosts:
+          - localhost
+          - "{{ tera_listen_address }}"
+        mariadb_databases:
+          - name: app
+    host_groups:
+      loadbalancer: {}
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy
+verifier:
+  name: ansible

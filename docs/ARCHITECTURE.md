@@ -23,7 +23,8 @@ roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
   templates:         tera.cnf.j2 tera-clustercheck.j2 tera-clustercheck.socket.j2 tera-clustercheck@.service.j2
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
 inventory/sample/{hosts.yml,group_vars/all/{tera.yml,passwords.yml},config/{mariadb,haproxy/conf.d,keepalived}}
-docs/  molecule/
+docs/
+molecule/{shared,standalone,standalone-podman}/   # shared = playbook converge/verify/prepare bersama
 ```
 
 ## Inventory cluster

@@ -56,3 +56,29 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: pytest
         run: pytest plugins/
+
+  molecule-podman:
+    # Fast complement only; Galera, Keepalived, sysctl and SELinux need the VM scenarios.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - docker.io/library/ubuntu:22.04
+          - docker.io/library/ubuntu:24.04
+          - docker.io/rockylinux/rockylinux:9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev requirements
+        run: pip install -r requirements-dev.txt
+      - name: Install collections
+        run: |
+          ansible-galaxy collection install -r requirements.yml -p ./collections
+          ansible-galaxy collection install -r molecule/requirements.yml -p ./collections
+      - name: molecule test -s standalone-podman
+        env:
+          TERA_PODMAN_IMAGE: ${{ matrix.image }}
+        run: molecule test -s standalone-podman

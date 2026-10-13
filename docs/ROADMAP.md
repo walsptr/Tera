@@ -27,6 +27,8 @@ Aturan:
 - [x] Play rolling restart + `restart.yml`
 - [ ] Molecule `standalone` (belum diverifikasi: Vagrant belum terpasang; verify.yml sudah lulus terhadap container systemd Ubuntu 24.04 dan Rocky 9)
 
+- [x] Molecule `standalone-podman` (pelengkap cepat, juga di CI — job CI belum diverifikasi di GitHub)
+
 Kriteria fase: deploy berhasil di semua OS target, run kedua `changed=0`, reconfigure menerapkan config global dan per host.
 
 ## Fase 2 — Galera
