@@ -16,7 +16,7 @@ jobs:
       - name: Install dev requirements
         run: pip install -r requirements-dev.txt
       - name: Install collections
-        run: ansible-galaxy collection install -r requirements.yml
+        run: ansible-galaxy collection install -r requirements.yml -p ./collections
       - name: yamllint
         run: yamllint .
       - name: ansible-lint
@@ -38,7 +38,7 @@ jobs:
       - name: Install dev requirements
         run: pip install -r requirements-dev.txt
       - name: Install collections
-        run: ansible-galaxy collection install -r requirements.yml
+        run: ansible-galaxy collection install -r requirements.yml -p ./collections
       - name: Syntax check playbooks
         run: |
           for pb in site.yml playbooks/mariadb-recover.yml playbooks/destroy.yml; do

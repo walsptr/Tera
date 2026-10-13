@@ -11,6 +11,9 @@ __pycache__/
 .ruff_cache/
 .venv/
 
+# Collections installed from requirements.yml
+collections/
+
 # Ansible / Molecule
 *.retry
 .molecule/

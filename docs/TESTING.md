@@ -2,8 +2,8 @@
 
 ## Level
 
-Alat pengembangan dipasang dengan `pip install -r requirements-dev.txt` dan
-`ansible-galaxy collection install -r requirements.yml`. CI (`.github/workflows/ci.yml`) menjalankan
+Alat pengembangan dipasang lokal di `.venv/` dan `collections/` (langkah lengkap di `AGENTS.md`,
+bagian "Setup lingkungan dev"). CI (`.github/workflows/ci.yml`) menjalankan
 lint, syntax-check, dan pytest.
 
 | Level | Perintah | Kapan |

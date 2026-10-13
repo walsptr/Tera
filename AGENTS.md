@@ -18,7 +18,7 @@ Tera menggabungkan dua pola:
 - Fase aktif mengikuti `docs/ROADMAP.md`.
 - OS target: Ubuntu 22.04 / 24.04, Rocky Linux 9, AlmaLinux 9. Jangan menambah OS lain tanpa diminta.
 - MariaDB dari repo upstream, default `mariadb_version: "11.4"`.
-- ansible-core >= 2.15. Collections: `community.mysql`, `community.general`, `ansible.posix`.
+- ansible-core >= 2.15. Collections: `ansible.mysql`, `community.general`, `ansible.posix`.
 
 ## Struktur repo
 
@@ -36,10 +36,21 @@ docs/                 # spesifikasi, roadmap, ADR
 molecule/             # skenario test
 ```
 
+## Setup lingkungan dev
+
+Semua alat dipasang lokal di root repo (`.venv/` dan `collections/`, keduanya di-gitignore);
+`ansible.cfg` sudah menunjuk `collections_path = ./collections`.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/ansible-galaxy collection install -r requirements.yml -p ./collections
+source .venv/bin/activate        # atau panggil .venv/bin/<alat> langsung
+```
+
 ## Perintah
 
 ```bash
-ansible-galaxy collection install -r requirements.yml
 ansible-lint
 ansible-playbook -i inventory/sample/hosts.yml site.yml --syntax-check
 pytest plugins/

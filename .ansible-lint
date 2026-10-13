@@ -4,6 +4,7 @@ exclude_paths:
   - .cache/
   - .github/
   - .venv/
+  - collections/
   - inventory/*/.facts_cache/
 mock_roles: []
 offline: true

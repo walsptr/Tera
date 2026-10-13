@@ -4,7 +4,9 @@ Dokumen ini wajib dibaca sebelum menulis kode.
 
 ## Ansible
 
-- Gunakan **FQCN** untuk semua module (`ansible.builtin.copy`, `community.mysql.mysql_user`).
+- Gunakan **FQCN** untuk semua module (`ansible.builtin.copy`, `ansible.mysql.mysql_user`).
+- Module MySQL/MariaDB memakai collection `ansible.mysql`. Jangan memakai `community.mysql`
+  (modulnya hanya redirect deprecated ke `ansible.mysql`).
 - Prefix variabel:
   - `tera_` — global
   - `mariadb_`, `postgresql_`, `haproxy_`, `keepalived_` — per komponen
@@ -19,6 +21,13 @@ Dokumen ini wajib dibaca sebelum menulis kode.
 - Nama task dalam bahasa Inggris, kalimat imperatif (`Install MariaDB packages`).
 - `fail_msg` untuk user boleh bahasa Indonesia dan wajib menyebut langkah perbaikan.
 - Task yang memuat password: `no_log: true`, dan gunakan `loop_control.label` agar nama item tetap terlihat.
+
+## Lint
+
+- `ansible-lint` memakai profil `production`.
+- Rule `var-naming[no-role-prefix]` dimatikan di `.ansible-lint`. Alasannya: prefix variabel Tera mengikuti
+  komponen, bukan nama role (`tera_` di role `tera_defaults`, `haproxy_`/`keepalived_` di role
+  `loadbalancer`). Rule `var-naming` lainnya tetap aktif.
 
 ## Bash
 

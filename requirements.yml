@@ -1,7 +1,7 @@
 ---
 collections:
-  - name: community.mysql
-    version: ">=3.9.0"
+  - name: ansible.mysql
+    version: ">=5.2.0"
   - name: community.general
     version: ">=8.0.0"
   - name: ansible.posix
