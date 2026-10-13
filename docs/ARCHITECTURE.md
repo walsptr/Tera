@@ -104,6 +104,10 @@ Role defaults tidak terlihat lewat `hostvars` host lain. Karena itu `tera_listen
 2. IPv4 dari interface `tera_network_interface`
 3. `ansible_facts.default_ipv4.address`
 
+Fact ini di-set dengan `cacheable: true` sehingga tersimpan di fact cache cluster; run dengan `--limit`
+tetap bisa membaca alamat host lain dari cache. Play facts menggagalkan run jika alamat bukan IPv4
+spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai lebih dari satu host.
+
 ## Variabel utama
 
 | Variabel | Default |

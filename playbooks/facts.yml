@@ -30,3 +30,58 @@
   any_errors_fatal: true
   roles:
     - role: tera_defaults
+  tasks:
+    # Cross-host values must be set_fact'ed here: role defaults are not visible via hostvars.
+    # Order: host var `ip` -> IPv4 of tera_network_interface -> default route address.
+    - name: Check tera_network_interface exists
+      ansible.builtin.assert:
+        that:
+          - _tera_iface_fact in ansible_facts
+          - ansible_facts[_tera_iface_fact]['ipv4']['address'] is defined
+        fail_msg: >-
+          Interface '{{ tera_network_interface }}' tidak ada atau tidak punya IPv4 di {{ inventory_hostname }}.
+          Perbaiki tera_network_interface, atau set host var `ip` di hosts.yml.
+        quiet: true
+      vars:
+        _tera_iface_fact: "{{ tera_network_interface | replace('-', '_') | replace('.', '_') | replace(':', '_') }}"
+      when:
+        - ip | default('') | length == 0
+        - tera_network_interface | length > 0
+
+    - name: Set tera_listen_address
+      ansible.builtin.set_fact:
+        # cacheable: hosts outside --limit keep their address in the per-cluster fact cache
+        tera_listen_address: >-
+          {{ ip if (ip | default('') | length > 0)
+             else ansible_facts[tera_network_interface | replace('-', '_') | replace('.', '_') | replace(':', '_')]['ipv4']['address']
+             if (tera_network_interface | length > 0)
+             else ansible_facts['default_ipv4']['address'] | default('') }}
+        cacheable: true
+
+    - name: Check tera_listen_address is a usable IPv4 address
+      ansible.builtin.assert:
+        that:
+          - tera_listen_address is match('^([0-9]{1,3}\\.){3}[0-9]{1,3}$')
+          - tera_listen_address != '0.0.0.0'
+        fail_msg: >-
+          tera_listen_address '{{ tera_listen_address }}' di {{ inventory_hostname }} tidak valid
+          (harus IPv4 spesifik, bukan 0.0.0.0). Set host var `ip` di hosts.yml atau tera_network_interface.
+        quiet: true
+
+    - name: Check tera_listen_address is unique across hosts
+      ansible.builtin.assert:
+        that:
+          - _tera_same_address | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }} memakai tera_listen_address {{ tera_listen_address }} yang sama dengan
+          {{ _tera_same_address | join(', ') }}. Set host var `ip` yang berbeda untuk setiap host di hosts.yml.
+        quiet: true
+      vars:
+        _tera_same_address: >-
+          {{ ansible_play_hosts
+             | reject('equalto', inventory_hostname)
+             | map('extract', hostvars)
+             | selectattr('tera_listen_address', 'defined')
+             | selectattr('tera_listen_address', 'equalto', tera_listen_address)
+             | map(attribute='inventory_hostname')
+             | list }}
