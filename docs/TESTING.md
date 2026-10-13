@@ -25,6 +25,18 @@ lint, syntax-check, dan pytest.
 - Memakai **VM dengan systemd penuh** (Vagrant/libvirt atau Incus), bukan Docker biasa.
 - Matriks platform: Ubuntu 22.04, Ubuntu 24.04, Rocky Linux 9 (AlmaLinux 9 opsional).
 - Setiap skenario: converge → idempotence (`changed=0`) → verify.
+- Driver: `vagrant` + provider `libvirt` (`molecule-plugins[vagrant]` ada di `requirements-dev.txt`;
+  `vagrant` dan plugin `vagrant-libvirt` dipasang terpisah di host).
+- Skenario single-node (`standalone`) menjalankan satu VM per run; matriks OS dipilih lewat `TERA_BOX`:
+
+  ```bash
+  for box in generic/ubuntu2204 cloud-image/ubuntu-24.04 generic/rocky9; do
+    TERA_BOX=$box molecule test -s standalone
+  done
+  ```
+
+  Nama box di atas perlu dikonfirmasi tersedia untuk provider libvirt.
+- Password test dibuat saat run di direktori ephemeral Molecule (tidak ada secret di repo).
 
 | Skenario | Verify |
 |---|---|

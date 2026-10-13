@@ -1,0 +1,3 @@
+# Molecule: global custom config
+[mysqld]
+max-connections = 321

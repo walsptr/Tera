@@ -1,0 +1,60 @@
+---
+- name: Verify standalone
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Load MariaDB OS variables
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
+
+    - name: Determine listen address
+      ansible.builtin.set_fact:
+        _verify_address: "{{ tera_listen_address | default(ip | default(ansible_facts['default_ipv4']['address'])) }}"
+
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Check MariaDB service is active and enabled
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['services'][_mariadb_service ~ '.service']['state'] == 'running'
+          - ansible_facts['services'][_mariadb_service ~ '.service']['status'] == 'enabled'
+
+    - name: Read 99-tera.cnf
+      ansible.builtin.slurp:
+        src: "{{ _mariadb_config_dir }}/99-tera.cnf"
+      register: _verify_cnf
+
+    - name: Check Tera header and per-host override
+      ansible.builtin.assert:
+        that:
+          - _verify_text.startswith('# Managed by Tera - JANGAN edit manual\n')
+          - "'# Sources: role:tera.cnf.j2, mariadb/tuning.cnf, mariadb/db01/host.cnf\n' in _verify_text"
+          - "'max_connections = 432\n' in _verify_text"
+      vars:
+        _verify_text: "{{ _verify_cnf['content'] | b64decode }}"
+
+    - name: Query server as admin over TCP
+      ansible.mysql.mysql_query:
+        login_host: "{{ _verify_address }}"
+        login_port: "{{ mariadb_port }}"
+        login_user: "{{ mariadb_admin_user | default('tera_admin') }}"
+        login_password: "{{ mariadb_admin_password }}"
+        query:
+          - SELECT @@max_connections AS max_connections, @@bind_address AS bind_address
+          - SELECT COUNT(*) AS n FROM mysql.user WHERE user = ''
+          - SELECT COUNT(*) AS n FROM information_schema.schemata WHERE schema_name = 'test'
+          - SELECT COUNT(*) AS n FROM information_schema.schemata WHERE schema_name = 'app'
+      register: _verify_query
+      no_log: true
+
+    - name: Check server state
+      ansible.builtin.assert:
+        that:
+          - _verify_query.query_result[0][0]['max_connections'] | int == 432
+          - _verify_query.query_result[0][0]['bind_address'] == _verify_address
+          - _verify_query.query_result[1][0]['n'] | int == 0
+          - _verify_query.query_result[2][0]['n'] | int == 0
+          - _verify_query.query_result[3][0]['n'] | int == 1

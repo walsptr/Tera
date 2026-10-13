@@ -1,0 +1,52 @@
+---
+# Standalone scenario (docs/TESTING.md). One VM per run; the OS matrix is driven by TERA_BOX:
+#   for box in generic/ubuntu2204 cloud-image/ubuntu-24.04 generic/rocky9; do
+#     TERA_BOX=$box molecule test -s standalone
+#   done
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ${MOLECULE_PROJECT_DIRECTORY}/requirements.yml
+driver:
+  name: vagrant
+  provider:
+    name: libvirt
+platforms:
+  - name: db01
+    box: ${TERA_BOX:-generic/ubuntu2204}
+    memory: 2048
+    cpus: 2
+    groups:
+      - mariadb
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+    ANSIBLE_FILTER_PLUGINS: ${MOLECULE_PROJECT_DIRECTORY}/plugins/filter
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/collections
+  inventory:
+    group_vars:
+      all:
+        tera_action: deploy
+        tera_config_dir: ${MOLECULE_SCENARIO_DIRECTORY}/config
+        # Test-only password, generated outside the repo in the ephemeral directory.
+        mariadb_admin_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/admin_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_databases:
+          - name: app
+    host_groups:
+      loadbalancer: {}
+scenario:
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - converge
+    - idempotence
+    - verify
+    - destroy
+verifier:
+  name: ansible

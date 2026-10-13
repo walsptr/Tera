@@ -25,7 +25,7 @@ Aturan:
 - [x] `roles/mariadb/tasks/config.yml` (merge custom config → `99-tera.cnf`)
 - [x] `standalone.yml` + `users.yml` (admin, hapus anonymous & database `test`, `mariadb_databases`, `mariadb_users`)
 - [x] Play rolling restart + `restart.yml`
-- [ ] Molecule `standalone`
+- [ ] Molecule `standalone` (belum diverifikasi: Vagrant belum terpasang; verify.yml sudah lulus terhadap container systemd Ubuntu 24.04 dan Rocky 9)
 
 Kriteria fase: deploy berhasil di semua OS target, run kedua `changed=0`, reconfigure menerapkan config global dan per host.
 
