@@ -1,2 +1,9 @@
 ---
-[]
+- name: Run prechecks
+  ansible.builtin.import_tasks: prechecks.yml
+
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Configure MariaDB
+  ansible.builtin.import_tasks: config.yml

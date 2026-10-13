@@ -1,2 +1,47 @@
 ---
-[]
+# Merge order (later wins): role template -> config/mariadb/*.cnf -> config/mariadb/<host>/*.cnf.
+# Spec: docs/CUSTOM-CONFIG.md. Never restarts MariaDB; only sets mariadb_restart_required.
+
+- name: Create Tera state directory
+  ansible.builtin.file:
+    path: "{{ tera_state_dir }}"
+    state: directory
+    owner: root
+    group: mysql
+    mode: "0750"
+
+- name: Find custom config files
+  ansible.builtin.set_fact:
+    _mariadb_custom_files: >-
+      {{ (query('ansible.builtin.fileglob', tera_config_dir ~ '/mariadb/*.cnf') | sort)
+         + (query('ansible.builtin.fileglob', tera_config_dir ~ '/mariadb/' ~ inventory_hostname ~ '/*.cnf') | sort) }}
+    _mariadb_custom_sources: []
+
+# Not no_log: Jinja errors must name the file. Rendered content is only shown with -v.
+- name: Render custom config files
+  ansible.builtin.set_fact:
+    _mariadb_custom_sources: >-
+      {{ _mariadb_custom_sources
+         + [{'path': item | relpath(tera_config_dir), 'content': lookup('ansible.builtin.template', item)}] }}
+  loop: "{{ _mariadb_custom_files }}"
+  loop_control:
+    label: "{{ item | relpath(tera_config_dir) }}"
+
+- name: Merge MariaDB config
+  ansible.builtin.set_fact:
+    _mariadb_cnf: "{{ lookup('ansible.builtin.template', 'tera.cnf.j2') | merge_ini(_mariadb_custom_sources) }}"
+  no_log: true
+
+- name: Write 99-tera.cnf
+  ansible.builtin.copy:
+    content: "{{ _mariadb_cnf }}"
+    dest: "{{ _mariadb_config_dir }}/99-tera.cnf"
+    owner: root
+    group: mysql
+    mode: "0640"
+  register: _mariadb_cnf_result
+
+# Consumed by the rolling restart play (ADR 0007), never by a handler.
+- name: Mark MariaDB for restart when config changed
+  ansible.builtin.set_fact:
+    mariadb_restart_required: "{{ (mariadb_restart_required | default(false) | bool) or (_mariadb_cnf_result is changed) }}"

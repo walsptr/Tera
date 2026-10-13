@@ -7,3 +7,6 @@
 
 - name: Install MariaDB
   ansible.builtin.import_tasks: install.yml
+
+- name: Configure MariaDB
+  ansible.builtin.import_tasks: config.yml

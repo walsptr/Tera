@@ -1,0 +1,6 @@
+{# Base options for 99-tera.cnf. The "Managed by Tera" header is added by merge_ini.
+   User overrides: inventory/<cluster>/config/mariadb/ (docs/CUSTOM-CONFIG.md). #}
+[mysqld]
+bind_address = {{ tera_listen_address }}
+port = {{ mariadb_port }}
+skip_name_resolve

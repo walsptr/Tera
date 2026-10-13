@@ -28,6 +28,10 @@ dari dokumen ini, dokumen ini yang benar.
 
 Hasil merge ditulis ke satu file drop-in `99-tera.cnf`.
 
+Isi template role saat ini (mode standalone): `[mysqld]` dengan `bind_address = {{ tera_listen_address }}`,
+`port = {{ mariadb_port }}`, dan `skip_name_resolve`. Semuanya bisa di-override atau dihapus (`__remove__`)
+lewat custom config. File berubah → `mariadb_restart_required: true`; `config.yml` sendiri tidak pernah me-restart.
+
 ## Jinja2
 
 Setiap custom file di-render dengan `lookup('ansible.builtin.template', …)` dalam konteks host target,
