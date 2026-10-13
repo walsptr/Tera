@@ -17,13 +17,18 @@
         name: test
         state: absent
 
+    - name: Show admin accounts to manage
+      ansible.builtin.debug:
+        msg: "{{ mariadb_admin_hosts | map('regex_replace', '^', mariadb_admin_user ~ '@') | list }}"
+
     - name: Create admin user
       ansible.mysql.mysql_user:
         name: "{{ mariadb_admin_user }}"
-        host: "{{ mariadb_admin_host }}"
+        host: "{{ item }}"
         password: "{{ mariadb_admin_password }}"
         priv: "*.*:ALL,GRANT"
         state: present
+      loop: "{{ mariadb_admin_hosts }}"
       no_log: true
 
     - name: Manage databases

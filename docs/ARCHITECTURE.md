@@ -137,7 +137,8 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_repo_deb_url` | `https://mirror.mariadb.org/repo/{{ mariadb_version }}/<distribution>` |
 | `mariadb_repo_rpm_url` | `https://rpm.mariadb.org/{{ mariadb_version }}/rhel/{{ distribution_major_version }}/$basearch` |
 | `mariadb_packages_extra` | `[]` |
-| `mariadb_admin_user` / `mariadb_admin_host` | `tera_admin` / `"%"` |
+| `mariadb_admin_user` | `tera_admin` |
+| `mariadb_admin_hosts` | `["localhost"]` (list host/subnet, mis. `"10.10.10.%"`; `"%"` memicu warning prechecks; host yang dihapus dari list tidak di-drop otomatis) |
 | `mariadb_databases` / `mariadb_users` | `[]` |
 
 Selama Fase 1, prechecks menolak `mariadb_cluster_mode: galera` (belum diimplementasikan).

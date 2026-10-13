@@ -34,6 +34,9 @@ provisioner:
           {{ lookup('ansible.builtin.password',
                     lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/admin_password',
                     chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_admin_hosts:
+          - localhost
+          - "{{ tera_listen_address }}"
         mariadb_databases:
           - name: app
     host_groups:

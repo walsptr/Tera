@@ -48,6 +48,25 @@
     quiet: true
   no_log: true
 
+- name: Check admin hosts
+  ansible.builtin.assert:
+    that:
+      - mariadb_admin_host is not defined
+      - mariadb_admin_hosts is sequence
+      - mariadb_admin_hosts is not string
+      - mariadb_admin_hosts | length > 0
+    fail_msg: >-
+      mariadb_admin_hosts harus berupa list host/subnet yang tidak kosong (mis. ["localhost", "10.10.10.%"]).
+      Variabel lama mariadb_admin_host tidak dipakai lagi; pindahkan nilainya ke mariadb_admin_hosts.
+    quiet: true
+
+- name: Warn when admin user is open to any host
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: mariadb_admin_hosts berisi "%", user {{ mariadb_admin_user }} bisa login dari host mana pun.
+      Batasi ke subnet (mis. "10.10.10.%") di group_vars/all/tera.yml.
+  when: "'%' in mariadb_admin_hosts"
+
 - name: Check custom config directory is absolute
   ansible.builtin.assert:
     that:

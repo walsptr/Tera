@@ -14,8 +14,12 @@ mariadb_packages_extra: []
 # --- Users ------------------------------------------------------------------
 # root@localhost stays unix_socket only (ADR 0008). Remote admin access uses this user,
 # password from mariadb_admin_password (passwords.yml).
+# One account per host pattern in mariadb_admin_hosts (skip_name_resolve: use IPs/subnets,
+# e.g. "10.10.10.%"). "%" (any host) is allowed but prechecks warn about it.
+# Hosts removed from this list are not dropped automatically.
 mariadb_admin_user: tera_admin
-mariadb_admin_host: "%"
+mariadb_admin_hosts:
+  - localhost
 
 # mariadb_databases:
 #   - name: app

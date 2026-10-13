@@ -10,8 +10,12 @@ mariadb_cluster_mode: standalone # standalone | galera
 # mariadb_port: 3306
 
 # Remote admin user (root stays unix_socket only). Password: mariadb_admin_password.
+# Host patterns allowed to log in as the admin user (default: localhost only).
+# skip_name_resolve is on: use IPs or subnets. "%" (any host) triggers a precheck warning.
 # mariadb_admin_user: tera_admin
-# mariadb_admin_host: "%"
+# mariadb_admin_hosts:
+#   - localhost
+#   - "10.10.10.%"
 
 # mariadb_databases:
 #   - name: app
