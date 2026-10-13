@@ -36,6 +36,12 @@
       loop_control:
         label: "{{ item.name }}"
 
+    # The loop below is no_log (labels are censored too), so show only user@host here.
+    - name: Show users to manage
+      ansible.builtin.debug:
+        msg: "{{ mariadb_users | map(attribute='name') | zip(mariadb_users | map(attribute='host', default='%')) | map('join', '@') | list }}"
+      when: mariadb_users | length > 0
+
     - name: Manage users
       ansible.mysql.mysql_user:
         name: "{{ item.name }}"
