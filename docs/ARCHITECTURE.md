@@ -14,7 +14,7 @@ tera                                  # CLI bash
 ansible.cfg  requirements.yml  requirements-dev.txt  site.yml  .gitignore
 .ansible-lint  .yamllint  pyproject.toml  .github/workflows/ci.yml
 playbooks/{facts,common,mariadb,loadbalancer,mariadb-recover,destroy}.yml
-plugins/filter/merge_ini.py   plugins/filter/tests/test_merge_ini.py
+plugins/filter/merge_ini.py   plugins/tests/test_merge_ini.py   # tests outside filter/: Ansible loads filter subdirs as plugins
 roles/tera_defaults/defaults/main.yml
 roles/common/tasks/{prechecks,deploy,reconfigure}.yml
 roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}

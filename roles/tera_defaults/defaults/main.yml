@@ -1,6 +1,50 @@
 ---
-# Global defaults, loaded by every play. Completed in Fase 1 (see docs/ARCHITECTURE.md).
+# Global defaults, loaded by every play (pattern from kubespray-defaults).
+# Values needed by other hosts must be set_fact'ed in playbooks/facts.yml,
+# because role defaults are not visible through hostvars.
+# Override in inventory/<cluster>/group_vars/all/tera.yml.
+
 tera_valid_actions:
   - prechecks
   - deploy
   - reconfigure
+
+# --- Paths ------------------------------------------------------------------
+# Custom config directory on the controller (absolute; see docs/CUSTOM-CONFIG.md).
+tera_config_dir: "{{ inventory_dir }}/config"
+# Tera markers and state on the nodes. Never inside the datadir (SST overwrites it).
+tera_state_dir: /etc/tera
+
+# --- Network ----------------------------------------------------------------
+# Interface used to derive tera_listen_address when host var `ip` is not set.
+# Empty = use the default route address.
+tera_network_interface: ""
+
+# --- Load balancer ----------------------------------------------------------
+tera_enable_loadbalancer: true
+# Computed: only galera clusters with a non-empty `loadbalancer` group get a load balancer.
+tera_lb_enabled: >-
+  {{ (mariadb_cluster_mode == 'galera')
+     and (tera_enable_loadbalancer | bool)
+     and ((groups['loadbalancer'] | default([])) | length > 0) }}
+tera_vip_address: ""
+tera_vip_cidr_prefix: 32
+keepalived_virtual_router_id: 51
+haproxy_stats_port: 8404
+
+# --- MariaDB ----------------------------------------------------------------
+mariadb_cluster_mode: standalone # standalone | galera
+mariadb_version: "11.4"
+mariadb_port: 3306
+mariadb_bootstrap_host: "{{ groups['mariadb'][0] }}"
+mariadb_galera_min_nodes: 3
+mariadb_galera_cluster_name: "{{ inventory_dir | basename }}"
+mariadb_clustercheck_port: 9200
+mariadb_clustercheck_available_when_donor: false
+mariadb_lb_mode: single_writer # single_writer | multi_writer
+
+# --- Timeouts (see docs/GALERA-LIFECYCLE.md) --------------------------------
+# Large SST may need higher values.
+mariadb_wait_retries: 120
+mariadb_wait_delay: 5
+mariadb_port_timeout: 300

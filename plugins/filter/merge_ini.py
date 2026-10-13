@@ -1,7 +1,7 @@
 """merge_ini filter: merge MariaDB option files into one deterministic drop-in.
 
 Behaviour is specified in docs/CUSTOM-CONFIG.md; every CC-xx example there has a test in
-tests/test_merge_ini.py.
+plugins/tests/test_merge_ini.py.
 
 Usage in a task:
 

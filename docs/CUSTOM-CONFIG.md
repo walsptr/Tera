@@ -2,7 +2,7 @@
 
 Dokumen ini adalah **acuan perilaku** filter `merge_ini` (`plugins/filter/merge_ini.py`) dan
 `roles/mariadb/tasks/config.yml`. Setiap contoh `CC-xx` di bawah **wajib** punya test
-(`plugins/filter/tests/test_merge_ini.py`, nama test menyebut ID-nya). Jika implementasi berbeda
+(`plugins/tests/test_merge_ini.py`, nama test menyebut ID-nya). Jika implementasi berbeda
 dari dokumen ini, dokumen ini yang benar.
 
 ## Lokasi
