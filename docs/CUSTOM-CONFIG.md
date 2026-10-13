@@ -40,9 +40,8 @@ Error Jinja harus menyebut nama file yang bermasalah.
 |---|---|
 | Delimiter | hanya `=` (dipisah pada `=` pertama) |
 | Key tanpa value | didukung (mis. `skip_name_resolve`) |
-| Normalisasi key | `-` → `_`, trim spasi |
-| Huruf besar/kecil key | dipertahankan |
-| Nama section | case-sensitive |
+| Normalisasi key | trim spasi, lowercase, lalu `-` → `_` (`Max-Connections` = `max_connections`) |
+| Nama section | case-sensitive, tidak diubah |
 | Komentar | baris yang diawali `#` atau `;` dibuang; tidak ada inline comment |
 | Key duplikat dalam satu file | terakhir menang |
 | Key sebelum section | error |
@@ -161,17 +160,17 @@ max_connections = 500
 wsrep_on = ON
 ```
 
-### CC-03 — normalisasi dan huruf besar/kecil key
+### CC-03 — normalisasi key (lowercase dan `-`)
 
 Input `mariadb/my.cnf`:
 
 ```ini
 [mysqld]
-Innodb-Flush-Method = O_DIRECT
-innodb_flush_method = fsync
+Max-Connections = 800
 ```
 
-Output (`Innodb_Flush_Method` dan `innodb_flush_method` adalah dua key berbeda):
+Output (`Max-Connections` dinormalisasi menjadi `max_connections`, sehingga meng-override key base
+di posisi semula, bukan menambah key baru):
 
 ```ini
 # Managed by Tera - JANGAN edit manual
@@ -179,10 +178,8 @@ Output (`Innodb_Flush_Method` dan `innodb_flush_method` adalah dua key berbeda):
 # Sources: role:tera.cnf.j2, mariadb/my.cnf
 
 [mysqld]
-max_connections = 500
+max_connections = 800
 skip_name_resolve
-Innodb_Flush_Method = O_DIRECT
-innodb_flush_method = fsync
 
 [galera]
 wsrep_on = ON
