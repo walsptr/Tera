@@ -18,5 +18,9 @@ Ansible perlu akses administratif ke MariaDB di node, dan operator/aplikasi perl
 
 ## Konsekuensi
 
-- Module `community.mysql` dipanggil dengan `login_unix_socket`.
+- Module `ansible.mysql` dipanggil dengan `login_unix_socket`.
 - Tidak ada `/root/.my.cnf` yang dikelola Tera.
+
+## Revisi
+
+- 2026-10-14: erratum — `community.mysql` diganti `ansible.mysql` (modul `community.mysql` kini hanya redirect deprecated); keputusan tidak berubah.

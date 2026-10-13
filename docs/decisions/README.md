@@ -4,7 +4,10 @@ Keputusan desain Tera dicatat di sini.
 
 ## Aturan
 
-- ADR berstatus `Accepted` **tidak diubah** isinya (kecuali typo).
+- ADR berstatus `Accepted` **tidak diubah** isinya, kecuali lewat aturan erratum di bawah.
+- **Erratum:** koreksi faktual yang tidak mengubah keputusan (typo, nama module/collection/path yang
+  berganti, tautan) boleh langsung diedit. Tambahkan catatan di bagian `## Revisi` di akhir ADR:
+  `- YYYY-MM-DD: <alasan singkat>`. Jika ragu apakah sebuah koreksi mengubah keputusan, anggap mengubah.
 - Untuk mengubah keputusan, buat ADR baru yang menyebut `Supersedes NNNN`, lalu ubah status ADR lama menjadi `Superseded by MMMM`.
 - Perubahan kode yang bertentangan dengan ADR `Accepted` harus didahului ADR baru dan diskusi.
 - Nama file: `NNNN-judul-singkat.md`, nomor berurutan.
@@ -24,6 +27,9 @@ Keputusan desain Tera dicatat di sini.
 ## Alternatif yang ditolak
 
 ## Konsekuensi
+
+## Revisi
+<!-- hanya untuk erratum: - YYYY-MM-DD: alasan singkat -->
 ```
 
 ## Daftar
