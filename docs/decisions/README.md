@@ -44,3 +44,4 @@ Keputusan desain Tera dicatat di sini.
 | [0006](0006-no-auto-bootstrap.md) | Tidak ada auto bootstrap cluster lama | Accepted |
 | [0007](0007-rolling-restart-play.md) | Rolling restart lewat play serial: 1, bukan handler | Accepted |
 | [0008](0008-root-unix-socket.md) | Root MariaDB via unix_socket, admin remote terpisah | Accepted |
+| [0009](0009-restart-pending-marker.md) | Restart pending marker | Accepted |
