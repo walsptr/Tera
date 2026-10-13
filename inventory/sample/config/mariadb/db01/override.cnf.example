@@ -1,0 +1,4 @@
+# Copy to override.cnf to apply only on db01 (wins over config/mariadb/*.cnf).
+
+# [mysqld]
+# innodb_io_capacity = 4000

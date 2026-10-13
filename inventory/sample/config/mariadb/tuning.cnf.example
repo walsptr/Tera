@@ -1,0 +1,10 @@
+# Copy to tuning.cnf to apply on every MariaDB node.
+# Keys are normalized: lowercase, "-" becomes "_". Later files win.
+# Only full-line comments (# or ;) are supported; no inline comments.
+
+# [mysqld]
+# max_connections = 1000
+# innodb_buffer_pool_size = {{ (ansible_facts['memtotal_mb'] * 0.6) | int }}M
+# innodb_log_file_size = 1G
+# Remove a key set by Tera:
+# skip_name_resolve = __remove__

@@ -1,3 +1,31 @@
 ---
-# Cluster variables. Completed in Fase 1.
-mariadb_cluster_mode: standalone
+# Cluster variables. Defaults live in roles/tera_defaults/defaults/main.yml and
+# roles/mariadb/defaults/main.yml; set only what differs here.
+
+# ansible_user: ubuntu
+
+# --- MariaDB ---------------------------------------------------------------
+mariadb_cluster_mode: standalone # standalone | galera
+# mariadb_version: "11.4"
+# mariadb_port: 3306
+
+# Remote admin user (root stays unix_socket only). Password: mariadb_admin_password.
+# mariadb_admin_user: tera_admin
+# mariadb_admin_host: "%"
+
+# mariadb_databases:
+#   - name: app
+# mariadb_users:
+#   - name: app
+#     host: "%"
+#     password: "{{ vault_app_password }}"
+#     priv: "app.*:ALL"
+
+# --- Network ---------------------------------------------------------------
+# tera_network_interface: eth1
+
+# --- Galera / load balancer (Fase 2/3) ---------------------------------------
+# mariadb_galera_cluster_name: "{{ inventory_dir | basename }}"   # must be unique per cluster
+# tera_vip_address: 10.0.0.10                                     # must be unique per cluster
+# keepalived_virtual_router_id: 51                                # must be unique per L2 network
+# mariadb_lb_mode: single_writer                                  # single_writer | multi_writer
