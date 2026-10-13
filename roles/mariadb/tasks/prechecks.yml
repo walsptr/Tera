@@ -1,2 +1,56 @@
 ---
-[]
+- name: Check OS family is supported
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] in ['Debian', 'RedHat']
+    fail_msg: "{{ inventory_hostname }}: OS family {{ ansible_facts['os_family'] }} tidak didukung. Lihat docs/ARCHITECTURE.md."
+    quiet: true
+
+- name: Check cluster mode and version
+  ansible.builtin.assert:
+    that:
+      - mariadb_cluster_mode in ['standalone', 'galera']
+      - mariadb_version is string
+      - mariadb_version is match('^[0-9]+\.[0-9]+$')
+    fail_msg: >-
+      mariadb_cluster_mode harus 'standalone' atau 'galera' dan mariadb_version berupa string
+      'MAJOR.MINOR' (mis. "11.4", pakai tanda kutip). Perbaiki group_vars/all/tera.yml.
+    quiet: true
+
+- name: Check galera mode is not used yet
+  ansible.builtin.assert:
+    that:
+      - mariadb_cluster_mode == 'standalone'
+    fail_msg: >-
+      Mode galera belum diimplementasikan (docs/ROADMAP.md Fase 2).
+      Set mariadb_cluster_mode: standalone di group_vars/all/tera.yml.
+    quiet: true
+
+- name: Check standalone topology
+  ansible.builtin.assert:
+    that:
+      - groups['mariadb'] | length == 1
+    fail_msg: >-
+      Mode standalone butuh tepat 1 host di group mariadb (sekarang {{ groups['mariadb'] | length }}:
+      {{ groups['mariadb'] | join(', ') }}). Kurangi host di hosts.yml atau gunakan mode galera.
+    quiet: true
+  when: mariadb_cluster_mode == 'standalone'
+
+- name: Check required passwords are set
+  ansible.builtin.assert:
+    that:
+      - mariadb_admin_password is defined
+      - mariadb_admin_password is string
+      - mariadb_admin_password | length > 0
+    fail_msg: >-
+      mariadb_admin_password kosong. Jalankan ./tera genpwd -i inventory/<cluster>
+      (lalu ansible-vault encrypt file passwords.yml).
+    quiet: true
+  no_log: true
+
+- name: Check custom config directory is absolute
+  ansible.builtin.assert:
+    that:
+      - tera_config_dir is match('^/')
+    fail_msg: "tera_config_dir harus path absolut (sekarang '{{ tera_config_dir }}'). Gunakan default atau path absolut."
+    quiet: true

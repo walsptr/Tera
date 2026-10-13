@@ -21,7 +21,7 @@ Aturan:
 - [x] `inventory/sample` dengan contoh config yang dikomentari
 - [x] `playbooks/facts.yml` (`tera_listen_address`)
 - [x] Role `common`
-- [ ] Role `mariadb`: vars per OS + repo upstream + install
+- [x] Role `mariadb`: vars per OS + repo upstream + install
 - [ ] `roles/mariadb/tasks/config.yml` (merge custom config → `99-tera.cnf`)
 - [ ] `standalone.yml` + `users.yml` (admin, hapus anonymous & database `test`, `mariadb_databases`, `mariadb_users`)
 - [ ] Play rolling restart + `restart.yml`

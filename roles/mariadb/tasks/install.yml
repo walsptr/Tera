@@ -1,2 +1,38 @@
 ---
-[]
+- name: Configure MariaDB upstream repository (Debian)
+  ansible.builtin.deb822_repository:
+    name: mariadb
+    types: deb
+    uris: "{{ mariadb_repo_deb_url }}"
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: main
+    signed_by: "{{ mariadb_repo_deb_key_url }}"
+    state: present
+  register: _mariadb_repo_deb
+  when:
+    - mariadb_repo_manage | bool
+    - ansible_facts['os_family'] == 'Debian'
+
+# A handler would run too late: packages from the new repository are installed below.
+- name: Update apt cache after repository change # noqa: no-handler
+  ansible.builtin.apt:
+    update_cache: true
+  when: _mariadb_repo_deb is changed
+
+- name: Configure MariaDB upstream repository (RedHat)
+  ansible.builtin.yum_repository:
+    name: mariadb
+    description: MariaDB {{ mariadb_version }}
+    baseurl: "{{ mariadb_repo_rpm_url }}"
+    gpgkey: "{{ mariadb_repo_rpm_key_url }}"
+    gpgcheck: true
+    module_hotfixes: true
+    state: present
+  when:
+    - mariadb_repo_manage | bool
+    - ansible_facts['os_family'] == 'RedHat'
+
+- name: Install MariaDB packages
+  ansible.builtin.package:
+    name: "{{ _mariadb_packages + mariadb_packages_extra }}"
+    state: present

@@ -129,6 +129,19 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `mariadb_lb_mode` | `single_writer` (`single_writer` \| `multi_writer`) |
 | `haproxy_stats_port` | `8404` |
 
+Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
+
+| Variabel | Default |
+|---|---|
+| `mariadb_repo_manage` | `true` (set `false` jika node sudah punya repo/mirror sendiri) |
+| `mariadb_repo_deb_url` | `https://mirror.mariadb.org/repo/{{ mariadb_version }}/<distribution>` |
+| `mariadb_repo_rpm_url` | `https://rpm.mariadb.org/{{ mariadb_version }}/rhel/{{ distribution_major_version }}/$basearch` |
+| `mariadb_packages_extra` | `[]` |
+| `mariadb_admin_user` / `mariadb_admin_host` | `tera_admin` / `"%"` |
+| `mariadb_databases` / `mariadb_users` | `[]` |
+
+Selama Fase 1, prechecks menolak `mariadb_cluster_mode: galera` (belum diimplementasikan).
+
 ## Topologi HA
 
 ```

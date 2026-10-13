@@ -1,2 +1,8 @@
 ---
-{}
+_mariadb_packages:
+  - mariadb-server
+  - mariadb-client
+  - python3-pymysql
+_mariadb_config_dir: /etc/mysql/mariadb.conf.d
+_mariadb_service: mariadb
+_mariadb_socket: /run/mysqld/mysqld.sock

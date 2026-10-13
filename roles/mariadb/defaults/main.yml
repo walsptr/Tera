@@ -1,2 +1,33 @@
 ---
-{}
+# MariaDB role defaults. Values shared with other plays live in roles/tera_defaults.
+
+# --- Upstream repository ----------------------------------------------------
+# Set to false when the nodes already have a MariaDB repository (e.g. internal mirror).
+mariadb_repo_manage: true
+mariadb_repo_deb_url: "https://mirror.mariadb.org/repo/{{ mariadb_version }}/{{ ansible_facts['distribution'] | lower }}"
+mariadb_repo_deb_key_url: https://mariadb.org/mariadb_release_signing_key.pgp
+mariadb_repo_rpm_url: "https://rpm.mariadb.org/{{ mariadb_version }}/rhel/{{ ansible_facts['distribution_major_version'] }}/$basearch"
+mariadb_repo_rpm_key_url: https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB
+
+mariadb_packages_extra: []
+
+# --- Users ------------------------------------------------------------------
+# root@localhost stays unix_socket only (ADR 0008). Remote admin access uses this user,
+# password from mariadb_admin_password (passwords.yml).
+mariadb_admin_user: tera_admin
+mariadb_admin_host: "%"
+
+# mariadb_databases:
+#   - name: app
+#     encoding: utf8mb4          # optional
+#     collation: utf8mb4_general_ci  # optional
+#     state: present             # optional
+mariadb_databases: []
+
+# mariadb_users:
+#   - name: app
+#     host: "%"                  # optional, default "%"
+#     password: "{{ vault_app_password }}"
+#     priv: "app.*:ALL"          # optional
+#     state: present             # optional
+mariadb_users: []
