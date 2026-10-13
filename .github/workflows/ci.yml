@@ -1,0 +1,59 @@
+---
+name: CI
+
+"on":
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev requirements
+        run: pip install -r requirements-dev.txt
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+      - name: yamllint
+        run: yamllint .
+      - name: ansible-lint
+        run: ansible-lint
+      - name: ruff
+        run: ruff check plugins/
+      - name: shellcheck
+        run: |
+          files=$(find . -path ./.git -prune -o -type f \( -name '*.sh' -o -name tera \) -print)
+          if [ -n "$files" ]; then shellcheck $files; else echo "no shell scripts"; fi
+
+  syntax-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev requirements
+        run: pip install -r requirements-dev.txt
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+      - name: Syntax check playbooks
+        run: |
+          for pb in site.yml playbooks/mariadb-recover.yml playbooks/destroy.yml; do
+            ansible-playbook -i inventory/sample/hosts.yml "$pb" --syntax-check
+          done
+
+  pytest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev requirements
+        run: pip install -r requirements-dev.txt
+      - name: pytest
+        # Exit code 5 = no tests collected (allowed until merge_ini tests exist)
+        run: pytest plugins/ || [ $? -eq 5 ]
