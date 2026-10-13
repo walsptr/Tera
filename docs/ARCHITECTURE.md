@@ -79,7 +79,7 @@ Perilaku CLI:
 
 | # | Play | Hosts | Catatan |
 |---|---|---|---|
-| 1 | Validate | localhost | ansible-core >= 2.15, `tera_action` valid |
+| 1 | Validate | localhost | ansible-core >= 2.16, `tera_action` valid |
 | 2 | Facts | `mariadb:loadbalancer` | `set_fact: tera_listen_address` |
 | 3 | Common | `mariadb:loadbalancer` | paket dasar |
 | 4 | MariaDB | `mariadb` | install, config, start/bootstrap/join, users |

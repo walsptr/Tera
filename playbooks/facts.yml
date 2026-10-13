@@ -10,8 +10,8 @@
     - name: Check ansible-core version
       ansible.builtin.assert:
         that:
-          - ansible_version.full is version('2.15', '>=')
-        fail_msg: "Tera membutuhkan ansible-core >= 2.15 (terpasang {{ ansible_version.full }}). Upgrade ansible-core lalu ulangi."
+          - ansible_version.full is version('2.16', '>=')
+        fail_msg: "Tera membutuhkan ansible-core >= 2.16 (terpasang {{ ansible_version.full }}). Upgrade ansible-core lalu ulangi."
         quiet: true
 
     - name: Check tera_action

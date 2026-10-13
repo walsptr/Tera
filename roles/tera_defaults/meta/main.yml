@@ -4,7 +4,7 @@ galaxy_info:
   author: Tera
   description: Tera tera_defaults role
   license: Apache-2.0
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.16"
   platforms:
     - name: Ubuntu
       versions:
