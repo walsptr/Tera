@@ -11,7 +11,8 @@
 
 ```
 tera                                  # CLI bash
-ansible.cfg  requirements.yml  site.yml  .gitignore
+ansible.cfg  requirements.yml  requirements-dev.txt  site.yml  .gitignore
+.ansible-lint  .yamllint  pyproject.toml  .github/workflows/ci.yml
 playbooks/{facts,common,mariadb,loadbalancer,mariadb-recover,destroy}.yml
 plugins/filter/merge_ini.py   plugins/filter/tests/test_merge_ini.py
 roles/tera_defaults/defaults/main.yml

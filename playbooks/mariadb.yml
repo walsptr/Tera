@@ -1,0 +1,27 @@
+---
+- name: Apply mariadb role
+  hosts: mariadb
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run mariadb action
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: "{{ tera_action }}.yml"
+
+- name: Rolling restart mariadb
+  hosts: mariadb
+  gather_facts: false
+  any_errors_fatal: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Restart mariadb when required
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: restart.yml
+      when: mariadb_restart_required | default(false) | bool

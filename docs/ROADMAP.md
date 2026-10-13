@@ -10,7 +10,7 @@ Aturan:
 ## Fase 0 — Fondasi
 
 - [x] Dokumen: `AGENTS.md`, `CLAUDE.md`, `docs/*`, ADR 0001–0008
-- [ ] Skeleton repo, `ansible.cfg`, `requirements.yml`, `.gitignore`
+- [x] Skeleton repo, `ansible.cfg`, `requirements.yml`, `.gitignore`
 - [ ] CI: ansible-lint, syntax-check, pytest, shellcheck, ruff
 
 ## Fase 1 — Core + MariaDB standalone

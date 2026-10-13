@@ -1,0 +1,13 @@
+---
+profile: production
+exclude_paths:
+  - .cache/
+  - .github/
+  - .venv/
+  - inventory/*/.facts_cache/
+mock_roles: []
+offline: true
+skip_list:
+  # Variable prefixes follow docs/CONVENTIONS.md (tera_, mariadb_, haproxy_, keepalived_),
+  # not the role name (e.g. tera_defaults, loadbalancer).
+  - var-naming[no-role-prefix]

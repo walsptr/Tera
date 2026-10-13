@@ -1,0 +1,32 @@
+---
+- name: Validate run
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Check ansible-core version
+      ansible.builtin.assert:
+        that:
+          - ansible_version.full is version('2.15', '>=')
+        fail_msg: "Tera membutuhkan ansible-core >= 2.15 (terpasang {{ ansible_version.full }}). Upgrade ansible-core lalu ulangi."
+        quiet: true
+
+    - name: Check tera_action
+      ansible.builtin.assert:
+        that:
+          - tera_action is defined
+          - tera_action in tera_valid_actions
+        fail_msg: >-
+          tera_action tidak valid: '{{ tera_action | default('') }}'.
+          Jalankan lewat CLI (./tera <perintah> -i inventory/<cluster>) atau set -e tera_action=<{{ tera_valid_actions | join('|') }}>.
+        quiet: true
+
+- name: Gather facts
+  hosts: mariadb:loadbalancer
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults

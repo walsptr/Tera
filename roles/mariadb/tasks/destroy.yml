@@ -1,0 +1,4 @@
+---
+- name: Fail because destroy is not implemented yet
+  ansible.builtin.fail:
+    msg: "Action 'destroy' belum diimplementasikan. Lihat docs/ROADMAP.md."

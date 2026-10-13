@@ -1,0 +1,13 @@
+---
+- name: Apply loadbalancer role
+  hosts: loadbalancer
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run loadbalancer action
+      ansible.builtin.include_role:
+        name: loadbalancer
+        tasks_from: "{{ tera_action }}.yml"
+      when: tera_lb_enabled | bool

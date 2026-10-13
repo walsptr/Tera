@@ -1,0 +1,12 @@
+---
+- name: Recover mariadb galera cluster
+  hosts: mariadb
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run mariadb recover
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: recover.yml

@@ -1,0 +1,12 @@
+---
+- name: Import facts playbook
+  ansible.builtin.import_playbook: playbooks/facts.yml
+
+- name: Import common playbook
+  ansible.builtin.import_playbook: playbooks/common.yml
+
+- name: Import mariadb playbook
+  ansible.builtin.import_playbook: playbooks/mariadb.yml
+
+- name: Import loadbalancer playbook
+  ansible.builtin.import_playbook: playbooks/loadbalancer.yml

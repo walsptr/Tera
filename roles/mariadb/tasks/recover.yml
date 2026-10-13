@@ -1,0 +1,4 @@
+---
+- name: Fail because recover is not implemented yet
+  ansible.builtin.fail:
+    msg: "Action 'recover' belum diimplementasikan. Lihat docs/ROADMAP.md."

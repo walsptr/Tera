@@ -1,0 +1,37 @@
+---
+- name: Confirm destroy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - tera_destroy_confirm | default(false) | bool
+        fail_msg: "Destroy menghapus data. Jalankan lewat: ./tera destroy -i inventory/<cluster> --yes-i-really-really-mean-it"
+        quiet: true
+
+- name: Destroy loadbalancer
+  hosts: loadbalancer
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run loadbalancer destroy
+      ansible.builtin.include_role:
+        name: loadbalancer
+        tasks_from: destroy.yml
+
+- name: Destroy mariadb
+  hosts: mariadb
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run mariadb destroy
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: destroy.yml

@@ -1,0 +1,3 @@
+---
+# Cluster variables. Completed in Fase 1.
+mariadb_cluster_mode: standalone

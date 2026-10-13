@@ -1,0 +1,6 @@
+---
+# Global defaults, loaded by every play. Completed in Fase 1 (see docs/ARCHITECTURE.md).
+tera_valid_actions:
+  - prechecks
+  - deploy
+  - reconfigure

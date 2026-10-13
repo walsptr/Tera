@@ -1,0 +1,12 @@
+---
+- name: Apply common role
+  hosts: mariadb:loadbalancer
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run common action
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: "{{ tera_action }}.yml"

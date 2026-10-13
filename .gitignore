@@ -15,3 +15,6 @@ __pycache__/
 *.retry
 .molecule/
 .cache/
+
+# Default fact cache when running ansible-playbook without the tera CLI
+.facts_cache/
