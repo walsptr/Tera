@@ -31,6 +31,11 @@ Aturan:
 
 Kriteria fase: deploy berhasil di semua OS target, run kedua `changed=0`, reconfigure menerapkan config global dan per host.
 
+Status: **selesai** (tag `v0.1.0`, 2026-10-14). Kriteria diverifikasi dengan Molecule `standalone` di
+Ubuntu 22.04/24.04 dan Rocky 9, plus uji manual `tera_action=reconfigure` di Ubuntu 22.04 (key global dan
+override per host aktif, restart sekali, run berikutnya `changed=0`). Tetap terbuka: item CI (Fase 0) dan job
+CI `molecule-podman` belum pernah jalan karena repo belum di-push ke GitHub.
+
 ## Fase 2 — Galera
 
 - [ ] `status.yml`
