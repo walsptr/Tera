@@ -28,7 +28,7 @@ Ringkas (detail di `docs/ARCHITECTURE.md`):
 tera                  # CLI bash di atas ansible-playbook
 ansible.cfg  requirements.yml  site.yml
 playbooks/            # facts, common, mariadb, loadbalancer, mariadb-recover, destroy
-plugins/filter/       # merge_ini.py + tests/
+plugins/filter/       # merge_ini.py, tera_ip.py + tests/
 roles/tera_defaults/  # hanya defaults/main.yml — default global
 roles/common/  roles/mariadb/  roles/loadbalancer/
 inventory/sample/     # template cluster: hosts.yml, group_vars/all/, config/
