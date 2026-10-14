@@ -90,6 +90,15 @@
     group: mysql
     mode: "0640"
   when: (_mariadb_cnf_check is changed) or (_mariadb_sst_cnf_check is changed)
+  register: _mariadb_marker_write
+
+# The marker must reach the disk before the new config does: after a power loss, a new config
+# without the marker would never be activated (ADR 0009).
+- name: Flush restart pending marker to disk # noqa: no-handler
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+  when: _mariadb_marker_write is changed
 
 - name: Write 99-tera.cnf
   ansible.builtin.copy:
@@ -111,6 +120,13 @@
   register: _mariadb_sst_cnf_result
   when: mariadb_cluster_mode == 'galera'
   no_log: true
+
+# MariaDB reads these files at boot: flush them before anything (re)starts it.
+- name: Flush MariaDB config to disk # noqa: no-handler
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+  when: (_mariadb_cnf_result is changed) or (_mariadb_sst_cnf_result is changed)
 
 - name: Check restart pending marker
   ansible.builtin.stat:

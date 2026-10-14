@@ -80,6 +80,14 @@
     group: mysql
     mode: "0640"
     force: false
+  register: _mariadb_galera_marker_write
+
+# deploy relies on the marker to refuse an automatic bootstrap (ADR 0006): make it durable.
+- name: Flush Galera bootstrap marker to disk # noqa: no-handler
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+  when: _mariadb_galera_marker_write is changed
 
 # Nodes (re)started above run with the current config (ADR 0009). After a fresh bootstrap that is
 # every node; after a join only the nodes that were not Primary.

@@ -17,6 +17,7 @@
     mode: "0640"
   diff: false
   no_log: true
+  register: _mariadb_clustercheck_cnf
 
 - name: Install clustercheck script
   ansible.builtin.template:
@@ -25,6 +26,7 @@
     owner: root
     group: root
     mode: "0755"
+  register: _mariadb_clustercheck_script
 
 - name: Install clustercheck systemd units
   ansible.builtin.template:
@@ -37,6 +39,13 @@
     - tera-clustercheck.socket
     - tera-clustercheck@.service
   register: _mariadb_clustercheck_units
+
+- name: Flush clustercheck files to disk # noqa: no-handler
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+  when: (_mariadb_clustercheck_cnf is changed) or (_mariadb_clustercheck_script is changed)
+        or (_mariadb_clustercheck_units is changed)
 
 # A changed socket unit (e.g. new address) only takes effect after a socket restart. Restarting the
 # socket does not touch MariaDB.

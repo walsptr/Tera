@@ -83,6 +83,9 @@ Dievaluasi setelah config ditulis, sebelum start/restart.
 - `config.yml` lalu membaca marker: `mariadb_restart_required` = flag lama OR file berubah OR marker ada.
   Dengan begitu run yang terputus setelah config ditulis tetap me-restart pada run `deploy`/`reconfigure`
   berikutnya. Action `prechecks` tidak pernah me-restart.
+- Durabilitas: marker di-`sync` ke disk **sebelum** config ditulis, dan config (`99-tera.cnf`,
+  `98-tera-sst.cnf`) di-`sync` sebelum MariaDB bisa di-start atau di-restart. Mati listrik tepat setelah Tera
+  menulis tidak bisa menyisakan config baru tanpa marker. Marker bootstrap juga di-`sync` setelah ditulis.
 - Marker dihapus hanya oleh: rolling restart yang sukses (port terbuka, dan Synced untuk galera), start
   pertama standalone, bootstrap/join galera, serta `tera recover` setelah semua node Synced (service menyala
   dengan config terbaru).

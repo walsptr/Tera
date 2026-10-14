@@ -213,6 +213,10 @@ ufw aktif). Matikan dengan `mariadb_firewall_manage: false` jika firewall dikelo
 
 Semua file yang dirender Tera diberi header "Managed by Tera".
 
+File yang dibaca MariaDB saat boot atau menjadi dasar keputusan Tera (`98`/`99-tera.cnf`, restart pending
+marker, marker bootstrap, file clustercheck) di-`sync` ke disk setelah berubah, sehingga mati listrik tidak
+meninggalkan file kosong atau terpotong. Restart pending marker di-`sync` sebelum config ditulis (ADR 0009).
+
 ## Menambah engine baru
 
 1. Group inventory baru (mis. `postgresql`).
