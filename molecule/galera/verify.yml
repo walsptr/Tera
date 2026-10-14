@@ -104,10 +104,11 @@
              | list }}
       when: _verify_fw is not skipped
 
-    # ausearch exits 1 when nothing matches: that is the expected result.
-    - name: Search SELinux denials for mysqld since boot
+    # All AVC records since boot (ausearch exits 1 when there are none), filtered here rather than with
+    # ausearch's own subject matching.
+    - name: Search SELinux denials since boot
       ansible.builtin.command:
-        cmd: ausearch --message AVC --start boot --subject mysqld_t
+        cmd: ausearch --message AVC --start boot
       register: _verify_avc
       changed_when: false
       failed_when: _verify_avc.rc not in [0, 1]
@@ -116,8 +117,8 @@
     - name: Check there are no SELinux denials for mysqld
       ansible.builtin.assert:
         that:
-          - _verify_avc.rc == 1
-        fail_msg: "SELinux denial untuk mysqld_t: {{ _verify_avc.stdout_lines | select('search', 'avc:') | list }}"
+          - _verify_avc.stdout_lines | select('search', 'mysqld_t') | list | length == 0
+        fail_msg: "SELinux denial untuk mysqld_t: {{ _verify_avc.stdout_lines | select('search', 'mysqld_t') | list }}"
       when: _verify_avc is not skipped
 
     - name: Query tera-clustercheck
