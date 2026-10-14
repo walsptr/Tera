@@ -20,6 +20,18 @@
   changed_when: true
   failed_when: false
 
+# For debugging: full output of every run, and the tasks that reported "changed".
+- name: Save run output
+  ansible.builtin.copy:
+    content: "{{ _se_run.stdout }}\n--- stderr ---\n{{ _se_run.stderr }}\n"
+    dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/tera-run-{{ lookup('ansible.builtin.pipe', 'date +%s%N') }}.log"
+    mode: "0600"
+
+- name: List changed tasks
+  ansible.builtin.set_fact:
+    _se_changed_tasks: >-
+      {{ _se_run.stdout.split('TASK [') | select('search', 'changed: \[') | map('regex_replace', '\][\s\S]*$', '') | list }}
+
 - name: Check the run succeeded
   ansible.builtin.assert:
     that:

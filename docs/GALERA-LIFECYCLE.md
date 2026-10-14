@@ -84,7 +84,8 @@ Dievaluasi setelah config ditulis, sebelum start/restart.
   Dengan begitu run yang terputus setelah config ditulis tetap me-restart pada run `deploy`/`reconfigure`
   berikutnya. Action `prechecks` tidak pernah me-restart.
 - Marker dihapus hanya oleh: rolling restart yang sukses (port terbuka, dan Synced untuk galera), start
-  pertama standalone, serta bootstrap/join galera (service menyala dengan config terbaru).
+  pertama standalone, bootstrap/join galera, serta `tera recover` setelah semua node Synced (service menyala
+  dengan config terbaru).
 
 ## Rolling restart
 
@@ -129,6 +130,21 @@ Langkah:
 7. Di node terpilih: set `safe_to_bootstrap: 1`, `galera_new_cluster`, tunggu Synced.
 8. Node lain start dengan `throttle: 1`, tunggu Synced.
 9. Pastikan marker ada di semua node.
+10. Setelah semua node Synced: hapus restart pending marker di semua node (ADR 0009, revisi 2026-10-14).
+    Recover menyalakan setiap node dengan config yang ada di disk, sehingga config terbaru sudah aktif.
+
+Jika uuid berbeda antar node atau tidak ada node dengan posisi yang diketahui (seqno tertinggi `-1`), recover
+gagal dan meminta `mariadb_recover_from` diset secara eksplisit. Memaksa node dengan data lebih lama
+menghilangkan transaksi yang lebih baru.
+
+### Pemulihan otomatis di produksi
+
+Unit systemd MariaDB upstream memakai `Restart=on-abnormal` (MariaDB 11.4; kill -9 dan crash termasuk), dan Galera menyimpan komponen Primary terakhir di
+`gvwstate.dat` (`pc.recovery`, aktif secara default). Setelah crash atau mati listrik, node bisa menyala
+lagi sendiri (service di-enable) dan, jika semua anggota komponen Primary terakhir kembali, membentuk
+Primary tanpa campur tangan. Dalam kondisi itu `tera deploy` melihat cluster **alive** dan hanya me-join
+node yang tertinggal; `tera recover` menolak berjalan karena ada node Primary. Jika pemulihan otomatis tidak
+terjadi (tidak ada Primary), `tera deploy` gagal dan mengarahkan ke `tera recover`.
 
 ## Timeout
 

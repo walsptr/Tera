@@ -37,3 +37,9 @@ ada yang menyadarinya.
 - Run yang terputus di tengah selalu dilanjutkan dengan restart pada run `deploy`/`reconfigure` berikutnya.
 - Perubahan metadata saja pada `99-tera.cnf` (owner/mode diubah manual) juga memicu restart.
 - Operator bisa melihat node yang menunggu restart dengan memeriksa marker.
+
+## Revisi
+
+- 2026-10-14: klarifikasi, bukan perubahan keputusan. `tera recover` termasuk "jalur yang menyalakan service
+  dengan config terbaru": setiap node dinyalakan dengan config yang ada di disk, sehingga recover menghapus
+  marker di semua node setelah semua Synced (`docs/GALERA-LIFECYCLE.md`, bagian Recover).

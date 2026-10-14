@@ -1,4 +1,202 @@
 ---
-- name: Fail because recover is not implemented yet
+# tera recover (docs/GALERA-LIFECYCLE.md, "Recover"): an explicit command, never part of deploy
+# (ADR 0006). Only when no node is Primary. Chooses the bootstrap node from grastate.dat / the
+# recovered position, bootstraps it, then starts the others one by one.
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Check recover prerequisites
+  ansible.builtin.assert:
+    that:
+      - mariadb_cluster_mode == 'galera'
+      - ansible_play_hosts_all | sort == groups['mariadb'] | sort
+      - (mariadb_recover_from | length == 0) or (mariadb_recover_from in groups['mariadb'])
+    fail_msg: >-
+      tera recover hanya untuk mariadb_cluster_mode: galera, harus mencakup semua node group mariadb
+      (tanpa --limit; host di run ini: {{ ansible_play_hosts_all | join(', ') }}), dan mariadb_recover_from
+      ('{{ mariadb_recover_from }}') harus kosong atau salah satu dari: {{ groups['mariadb'] | join(', ') }}.
+    quiet: true
+
+- name: Read Galera status
+  ansible.builtin.include_tasks: status.yml
+
+- name: Refuse to recover a cluster that is alive
   ansible.builtin.fail:
-    msg: "Action 'recover' belum diimplementasikan. Lihat docs/ROADMAP.md."
+    msg: >-
+      {{ ansible_play_hosts | map('extract', hostvars) | selectattr('_mariadb_wsrep_primary') | map(attribute='inventory_hostname') | join(', ') }}
+      masih Primary: cluster hidup dan tidak perlu di-recover. Jalankan ./tera deploy -i inventory/<cluster>
+      untuk me-join node yang tertinggal.
+  when: _galera_cluster_alive
+
+- name: Stop MariaDB on all nodes
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+    state: stopped
+
+- name: Read grastate.dat
+  ansible.builtin.slurp:
+    src: "{{ mariadb_datadir }}/grastate.dat"
+  register: _mariadb_grastate_raw
+  failed_when: false
+
+- name: Parse grastate.dat
+  ansible.builtin.set_fact:
+    _mariadb_recover_uuid: "{{ _grastate | regex_search('^uuid:\\s*(\\S+)', '\\1', multiline=True) | default([''], true) | first }}"
+    _mariadb_recover_seqno: "{{ _grastate | regex_search('^seqno:\\s*(-?[0-9]+)', '\\1', multiline=True) | default(['-1'], true) | first | int }}"
+    _mariadb_recover_safe: "{{ (_grastate is search('^safe_to_bootstrap:\\s*1\\s*$', multiline=True)) | bool }}"
+  vars:
+    _grastate: "{{ (_mariadb_grastate_raw.content | default('')) | b64decode }}"
+
+# seqno -1: unclean shutdown (crash, kill -9, power loss). wsrep-recover runs InnoDB crash recovery
+# and prints the last committed position, then exits.
+- name: Recover the position with wsrep-recover
+  when: _mariadb_recover_seqno | int == -1
+  block:
+    # In the datadir so mysqld may write it under SELinux (mysqld_db_t); removed below.
+    - name: Create temporary wsrep-recover log
+      ansible.builtin.tempfile:
+        path: "{{ mariadb_datadir }}"
+        prefix: tera-wsrep-recover.
+        suffix: .log
+      register: _mariadb_recover_log
+
+    - name: Let mysql write the temporary log
+      ansible.builtin.file:
+        path: "{{ _mariadb_recover_log.path }}"
+        owner: mysql
+        group: mysql
+        mode: "0640"
+
+    - name: Run mariadbd --wsrep-recover
+      ansible.builtin.command:
+        cmd: mariadbd --user=mysql --wsrep-recover --log-error={{ _mariadb_recover_log.path }}
+      changed_when: true
+
+    - name: Read wsrep-recover log
+      ansible.builtin.slurp:
+        src: "{{ _mariadb_recover_log.path }}"
+      register: _mariadb_recover_out
+
+    # Single backslashes: inside a folded scalar the Jinja string is not unescaped.
+    - name: Check wsrep-recover printed a position
+      ansible.builtin.assert:
+        that:
+          - _position | length == 2
+        fail_msg: >-
+          mariadbd --wsrep-recover di {{ inventory_hostname }} tidak mencetak "WSREP: Recovered position".
+          Baris WSREP/ERROR terakhir: {{ ((_mariadb_recover_out.content | b64decode).splitlines()
+          | select('search', 'WSREP|ERROR') | list)[-5:] }}. Periksa datadir dan log MariaDB node ini.
+        quiet: true
+      vars:
+        _position: >-
+          {{ (_mariadb_recover_out.content | b64decode)
+             | regex_findall('WSREP: Recovered position:\s*([0-9a-f-]+):(-?[0-9]+)') | last | default([]) }}
+
+    - name: Parse recovered position
+      ansible.builtin.set_fact:
+        _mariadb_recover_uuid: "{{ _position[0] }}"
+        _mariadb_recover_seqno: "{{ _position[1] | int }}"
+      vars:
+        _position: >-
+          {{ (_mariadb_recover_out.content | b64decode)
+             | regex_findall('WSREP: Recovered position:\s*([0-9a-f-]+):(-?[0-9]+)') | last }}
+  always:
+    - name: Remove temporary wsrep-recover log
+      ansible.builtin.file:
+        path: "{{ _mariadb_recover_log.path }}"
+        state: absent
+      when: _mariadb_recover_log.path is defined
+
+# Computed on every host from all hosts (no run_once + set_fact), in inventory order.
+- name: Choose the bootstrap node
+  ansible.builtin.set_fact:
+    _mariadb_recover_choice: >-
+      {{ mariadb_recover_from if mariadb_recover_from | length > 0
+         else (_names | zip(_safes) | selectattr('1') | map(attribute='0') | first)
+         if (_safes | select | list | length > 0)
+         else _names[_seqnos.index(_seqnos | max)] }}
+    _mariadb_recover_reason: >-
+      {{ 'mariadb_recover_from' if mariadb_recover_from | length > 0
+         else 'safe_to_bootstrap: 1' if (_safes | select | list | length > 0)
+         else 'seqno tertinggi (' ~ (_seqnos | max) ~ ')' }}
+    _mariadb_recover_uuids: "{{ _uuids | unique | list }}"
+  vars:
+    _names: "{{ groups['mariadb'] }}"
+    _uuids: "{{ _names | map('extract', hostvars, '_mariadb_recover_uuid') | list }}"
+    _seqnos: "{{ _names | map('extract', hostvars, '_mariadb_recover_seqno') | map('int') | list }}"
+    _safes: "{{ _names | map('extract', hostvars, '_mariadb_recover_safe') | map('bool') | list }}"
+
+- name: Show recover summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: uuid={{ _mariadb_recover_uuid }} seqno={{ _mariadb_recover_seqno }}
+      safe_to_bootstrap={{ 1 if _mariadb_recover_safe else 0 }} |
+      node bootstrap terpilih: {{ _mariadb_recover_choice }} ({{ _mariadb_recover_reason }})
+
+- name: Refuse nodes from different clusters or without a position
+  ansible.builtin.fail:
+    msg: >-
+      Tidak bisa memilih node bootstrap secara aman: uuid antar node berbeda ({{ _mariadb_recover_uuids | join(', ') }})
+      atau tidak ada node dengan posisi yang diketahui (seqno tertinggi -1). Periksa grastate.dat dan log
+      MariaDB di setiap node, lalu tentukan node yang datanya paling baru secara eksplisit:
+      ./tera recover -i inventory/<cluster> -e mariadb_recover_from=<node>.
+  when:
+    - mariadb_recover_from | length == 0
+    - (_mariadb_recover_uuids | length != 1)
+      or ('' in _mariadb_recover_uuids)
+      or (groups['mariadb'] | map('extract', hostvars, '_mariadb_recover_seqno') | map('int') | max == -1)
+
+- name: Mark the chosen node safe to bootstrap
+  ansible.builtin.lineinfile:
+    path: "{{ mariadb_datadir }}/grastate.dat"
+    regexp: '^safe_to_bootstrap:'
+    line: "safe_to_bootstrap: 1"
+  when: inventory_hostname == _mariadb_recover_choice
+
+- name: Bootstrap the cluster on the chosen node
+  ansible.builtin.command:
+    cmd: galera_new_cluster
+  changed_when: true
+  when: inventory_hostname == _mariadb_recover_choice
+
+- name: Wait for the chosen node to be Synced
+  ansible.builtin.include_tasks: wait_synced.yml
+  when: inventory_hostname == _mariadb_recover_choice
+
+- name: Start the other nodes one by one
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+    state: started
+  throttle: 1
+  when: inventory_hostname != _mariadb_recover_choice
+
+- name: Wait for all nodes to be Synced after recover
+  ansible.builtin.include_tasks: wait_synced.yml
+
+- name: Enable MariaDB at boot
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+    enabled: true
+
+- name: Write Galera bootstrap marker
+  ansible.builtin.copy:
+    content: "Galera cluster bootstrapped by Tera. Do not remove: deploy relies on it (ADR 0006).\n"
+    dest: "{{ mariadb_galera_marker }}"
+    owner: root
+    group: mysql
+    mode: "0640"
+    force: false
+  register: _mariadb_galera_marker_write
+
+# deploy relies on the marker to refuse an automatic bootstrap (ADR 0006): make it durable.
+- name: Flush Galera bootstrap marker to disk # noqa: no-handler
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+  when: _mariadb_galera_marker_write is changed
+
+# Every node was started by recover with the config on disk (ADR 0009, revisi 2026-10-14).
+- name: Remove restart pending marker after all nodes are Synced
+  ansible.builtin.file:
+    path: "{{ mariadb_restart_marker }}"
+    state: absent

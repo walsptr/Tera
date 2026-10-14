@@ -1,0 +1,30 @@
+---
+- name: Shared prepare
+  ansible.builtin.import_playbook: ../shared/prepare.yml
+
+# Test only, never in the role: the upstream unit restarts mariadbd after kill -9 (Restart=on-abnormal)
+# and Galera pc.recovery may then re-form the Primary component by itself. Without automatic restart
+# the outage stays an outage, so the deploy refusal and tera recover can be tested deterministically.
+- name: Disable automatic restart of MariaDB
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Create MariaDB unit drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/mariadb.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Write Restart=no drop-in
+      ansible.builtin.copy:
+        content: |
+          # Molecule recover scenario only.
+          [Service]
+          Restart=no
+        dest: /etc/systemd/system/mariadb.service.d/zz-molecule-no-restart.conf
+        mode: "0644"
+
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true

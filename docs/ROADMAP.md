@@ -46,7 +46,7 @@ CI `molecule-podman` belum pernah jalan karena repo belum di-push ke GitHub.
 - [x] Prechecks galera
 - [x] Firewall: firewalld untuk port Galera (ADR 0010)
 - [x] SELinux (port Galera, `mysqld_t` permissive opsional)
-- [ ] `tera recover`
+- [x] `tera recover`
 - [x] Clustercheck
 - [ ] Molecule `galera`, `reconfigure`, `recover`
 

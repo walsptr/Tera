@@ -127,7 +127,8 @@ Playbook converge/verify/prepare dipakai bersama di `molecule/shared/`.
 | `standalone`, `standalone-podman` | service aktif; login admin via TCP; user anonymous & database `test` tidak ada; header Tera ada di `99-tera.cnf`; config per host aktif. Side effect (ADR 0009): run `--check` tidak menulis restart pending marker; run yang terputus setelah config ditulis meninggalkan marker dan config belum aktif; `converge` berikutnya me-restart, config aktif, marker hilang |
 | `galera` (3 node) | fresh bootstrap; cluster size 3; semua Synced dan Primary; marker ada; tidak ada restart pending marker; `98-tera-sst.cnf` `0640 root:mysql`; `99-tera.cnf` punya `[galera]` dan tidak berisi secret; tulis di db01 terbaca di db03; login admin via TCP; `tera-clustercheck` 200 di setiap node; idempotence `changed=0`. Rocky: aturan firewalld (ADR 0010) dan tanpa denial SELinux untuk `mysqld_t`. Side effect: (1) prechecks menolak node kurang dari minimal, `deploy --limit`, password SST kosong, dan `wsrep_sst_auth` di custom config (run `ansible-playbook` terpisah, pesan di-assert); (2) db02 di-stop (clustercheck db02 503, socket tetap menjawab), `deploy` me-join db02 tanpa bootstrap ulang dan tanpa me-restart db01/db03; `wsrep_desync=ON` di db03 → clustercheck 503, `OFF` → 200; (3) db03 di-stop dan marker-nya dihapus: `deploy` ditolak pengaman SST (menyebut db03 dan database `app`), lalu `deploy -e mariadb_galera_allow_sst_overwrite=true` me-join db03. Login via VIP dan backend HAProxy diverifikasi di Fase 3 |
 | `reconfigure` | config global aktif di semua node dengan restart berurutan; config per host hanya me-restart host itu; run ulang tanpa restart |
-| `recover` | `kill -9` semua node → deploy FAIL dengan pesan recover → `tera recover` → size 3, data yang sudah commit utuh |
+| `recover` | prepare memasang drop-in `Restart=no` (khusus test). A: writer di db03 meng-commit baris ke db01, `kill -9` semua node → `grastate` `seqno: -1` → deploy FAIL dengan pesan recover → `tera recover` (jalur `--wsrep-recover`, seqno tertinggi) → setiap baris yang di-ack ada di semua node → deploy `changed=0`. B: stop rapi db01, db02, db03 → recover memilih db03 (`safe_to_bootstrap: 1`). C: `kill -9` lagi → recover dengan `mariadb_recover_from=db02`. Verify = verify `galera` |
+| `recover-poweroff` (opsional, tidak masuk run default) | semua node di-hard-reset bersamaan (`sysrq b`) saat writer berjalan, policy restart upstream dipertahankan. Jalur yang terjadi dicatat di `poweroff-path.txt`: (i) pulih sendiri (`pc.recovery`) → deploy `changed=0`, atau (ii) tidak ada Primary → deploy FAIL dengan pesan recover → `tera recover`. Keduanya wajib tanpa kehilangan baris yang di-ack |
 | `scale` | node ke-4 join; node lama rolling restart; backend HAProxy bertambah |
 
 ## Definition of done
@@ -144,7 +145,8 @@ Playbook converge/verify/prepare dipakai bersama di `molecule/shared/`.
 - [ ] Reconfigure (global dan per host)
 - [ ] Failover writer (stop db01, HAProxy pindah ke backup)
 - [ ] Failover VIP (stop haproxy/keepalived di master)
-- [ ] Power off semua node → `tera recover`
+- [ ] Power off semua node bersamaan (bukan stop rapi), nyalakan lagi: catat apakah cluster pulih sendiri
+  (`pc.recovery`, deploy `changed=0`) atau butuh `tera recover`; data yang sudah commit utuh
 - [ ] `tera recover -e mariadb_recover_from=<host>`
 - [ ] Dua cluster dengan hostname sama tidak tertukar (fact cache per cluster)
 - [ ] `tera destroy` lalu deploy ulang

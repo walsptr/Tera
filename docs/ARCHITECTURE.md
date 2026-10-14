@@ -60,7 +60,7 @@ Nilai yang wajib unik per cluster dan divalidasi di prechecks:
 | `prechecks -i` | `site.yml` | `prechecks` |
 | `deploy -i` | `site.yml` | `deploy` |
 | `reconfigure -i` | `site.yml` | `reconfigure` |
-| `recover -i` | `playbooks/mariadb-recover.yml` | – |
+| `recover -i [-e mariadb_recover_from=<node>]` | `playbooks/mariadb-recover.yml` | – |
 | `destroy -i … --yes-i-really-really-mean-it` | `playbooks/destroy.yml` (`-e tera_destroy_confirm=true`) | – |
 
 Perilaku CLI:
@@ -146,6 +146,7 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_sst_user` | `tera_sst` (`@localhost`; password dari `mariadb_sst_password`) |
 | `mariadb_galera_allow_sst_overwrite` | `false` (lihat prasyarat deploy di `GALERA-LIFECYCLE.md`) |
 | `mariadb_clustercheck_user` | `tera_clustercheck` (`@localhost`, tanpa privilege; password dari `mariadb_clustercheck_password`) |
+| `mariadb_recover_from` | `""` (`tera recover`: paksa node bootstrap; kosong = otomatis) |
 | `mariadb_datadir` | `/var/lib/mysql` (dibaca pengaman SST dan `tera recover`; samakan jika custom config mengubah datadir) |
 | `mariadb_firewall_manage` | `true` (mode galera, hanya jika firewalld berjalan; ADR 0010) |
 | `mariadb_selinux_permissive` | `false` (`true` = domain `mysqld_t` permissive; tidak disarankan) |

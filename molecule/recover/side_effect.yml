@@ -1,0 +1,232 @@
+---
+# Recover (docs/GALERA-LIFECYCLE.md, "Recover"):
+# A. kill -9 on all nodes while a writer commits rows: grastate seqno -1 everywhere, deploy refuses
+#    (ADR 0006), tera recover uses --wsrep-recover, every acknowledged row survives, the next deploy
+#    changes nothing;
+# B. clean stop db01, db02, then db03: db03 has safe_to_bootstrap: 1 and must be chosen;
+# C. kill -9 again, recover with mariadb_recover_from=db02.
+- name: Start a writer
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Load MariaDB OS variables
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
+
+    - name: Create the test table on db01
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query: CREATE TABLE IF NOT EXISTS app.recover_t (id BIGINT AUTO_INCREMENT PRIMARY KEY, v INT)
+      when: inventory_hostname == 'db01'
+
+    - name: Write writer credentials on db03
+      ansible.builtin.copy:
+        content: |
+          [client]
+          user = {{ mariadb_admin_user | default('tera_admin') }}
+          password = {{ mariadb_admin_password }}
+        dest: /root/tera-writer.cnf
+        mode: "0600"
+      no_log: true
+      when: inventory_hostname == 'db03'
+
+    - name: Copy writer script to db03
+      ansible.builtin.copy:
+        src: tera-writer.sh
+        dest: /usr/local/sbin/tera-writer.sh
+        mode: "0755"
+      when: inventory_hostname == 'db03'
+
+    - name: Start writer on db03 against db01
+      ansible.builtin.command:
+        cmd: >-
+          systemd-run --unit=tera-writer --collect /usr/local/sbin/tera-writer.sh
+          {{ hostvars['db01']['ansible_facts']['default_ipv4']['address'] }} /root/tera-acked.log
+      changed_when: true
+      when: inventory_hostname == 'db03'
+
+    - name: Wait for acknowledged writes
+      ansible.builtin.command:
+        cmd: wc -l /root/tera-acked.log
+      register: _se_acked_count
+      until: _se_acked_count.stdout.split()[0] | int >= 50
+      retries: 30
+      delay: 1
+      changed_when: false
+      when: inventory_hostname == 'db03'
+
+- name: Kill every node (case A)
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Kill mariadbd with SIGKILL on all nodes at once
+      ansible.builtin.command:
+        cmd: pkill -9 -x mariadbd
+      changed_when: true
+
+    - name: Stop writer
+      ansible.builtin.systemd_service:
+        name: tera-writer
+        state: stopped
+      when: inventory_hostname == 'db03'
+
+    - name: Read acknowledged ids
+      ansible.builtin.slurp:
+        src: /root/tera-acked.log
+      register: _se_acked
+      when: inventory_hostname == 'db03'
+
+    - name: Wait for mariadbd to be gone
+      ansible.builtin.command:
+        cmd: pgrep -x mariadbd
+      register: _se_pgrep
+      until: _se_pgrep.rc == 1
+      retries: 10
+      delay: 1
+      changed_when: false
+      failed_when: _se_pgrep.rc not in [0, 1]
+
+    - name: Read grastate.dat
+      ansible.builtin.slurp:
+        src: /var/lib/mysql/grastate.dat
+      register: _se_grastate
+
+    - name: Assert the crash left seqno -1
+      ansible.builtin.assert:
+        that:
+          - (_se_grastate.content | b64decode) is search('^seqno:\\s+-1$', multiline=True)
+
+- name: Deploy refuses, recover restores (case A)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy on a dead cluster
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect: "Tera tidak mem-bootstrap ulang secara otomatis"
+          expect_also: "./tera recover"
+
+    - name: Run recover
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-recover.yml
+          expect_success: true
+
+    - name: Assert recover used wsrep-recover and the highest seqno
+      ansible.builtin.assert:
+        that:
+          - "'Run mariadbd --wsrep-recover' in _se_run.stdout"
+          - "'(seqno tertinggi' in (_se_run.stdout | regex_replace('\\s+', ' '))"
+
+- name: Check acknowledged rows survived (case A)
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Count acknowledged rows
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query: "SELECT COUNT(*) AS n FROM app.recover_t WHERE id IN ({{ _se_ids | join(',') }})"
+      register: _se_rows
+      vars:
+        _se_ids: "{{ (hostvars['db03']['_se_acked']['content'] | b64decode).split() | map('int') | list }}"
+
+    - name: Assert every acknowledged row exists on every node
+      ansible.builtin.assert:
+        that:
+          - _se_rows.query_result[0][0]['n'] | int == _se_expected | length
+          - _se_expected | length >= 50
+      vars:
+        _se_expected: "{{ (hostvars['db03']['_se_acked']['content'] | b64decode).split() }}"
+
+- name: Deploy after recover changes nothing (case A)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+    - name: Assert nothing changed
+      ansible.builtin.assert:
+        that:
+          - _se_run.stdout is not search('changed=[1-9]')
+        fail_msg: "changed tasks: {{ _se_changed_tasks }}; {{ _se_run.stdout_lines | select('search', 'changed=') | list }}"
+
+- name: Clean stop in order db01, db02, db03 (case B)
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  serial: 1
+  order: inventory
+  tasks:
+    - name: Stop MariaDB
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: stopped
+
+- name: Recover picks the node that stopped last (case B)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run recover
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-recover.yml
+          expect_success: true
+
+    - name: Assert db03 was chosen because of safe_to_bootstrap
+      ansible.builtin.assert:
+        that:
+          - "'node bootstrap terpilih: db03 (safe_to_bootstrap: 1)' in (_se_run.stdout | regex_replace('\\s+', ' '))"
+
+- name: Kill every node again (case C)
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Kill mariadbd with SIGKILL on all nodes at once
+      ansible.builtin.command:
+        cmd: pkill -9 -x mariadbd
+      changed_when: true
+
+    - name: Wait for mariadbd to be gone
+      ansible.builtin.command:
+        cmd: pgrep -x mariadbd
+      register: _se_pgrep
+      until: _se_pgrep.rc == 1
+      retries: 10
+      delay: 1
+      changed_when: false
+      failed_when: _se_pgrep.rc not in [0, 1]
+
+- name: Recover from an explicit node (case C)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run recover with mariadb_recover_from=db02
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-recover.yml
+          args: [-e, mariadb_recover_from=db02]
+          expect_success: true
+
+    - name: Assert db02 was chosen
+      ansible.builtin.assert:
+        that:
+          - "'node bootstrap terpilih: db02 (mariadb_recover_from)' in (_se_run.stdout | regex_replace('\\s+', ' '))"

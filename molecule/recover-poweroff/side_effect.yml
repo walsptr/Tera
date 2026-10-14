@@ -1,0 +1,184 @@
+---
+# Power-off variant (optional, docs/TESTING.md). All nodes are hard reset at once (sysrq "b":
+# immediate reboot without syncing disks, like a power cut) while a writer commits rows. Accepted
+# outcomes, recorded in <ephemeral>/poweroff-path.txt:
+#   (i)  the cluster recovers by itself (Restart=on-abnormal + pc.recovery), deploy changes nothing;
+#   (ii) no Primary forms, deploy refuses and points to tera recover, tera recover restores it.
+# Either way every acknowledged row must exist on every node.
+- name: Start a writer
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Load MariaDB OS variables
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
+
+    - name: Create the test table on db01
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query: CREATE TABLE IF NOT EXISTS app.recover_t (id BIGINT AUTO_INCREMENT PRIMARY KEY, v INT)
+      when: inventory_hostname == 'db01'
+
+    - name: Write writer credentials on db03
+      ansible.builtin.copy:
+        content: |
+          [client]
+          user = {{ mariadb_admin_user | default('tera_admin') }}
+          password = {{ mariadb_admin_password }}
+        dest: /root/tera-writer.cnf
+        mode: "0600"
+      no_log: true
+      when: inventory_hostname == 'db03'
+
+    - name: Copy writer script to db03
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../recover/files/tera-writer.sh"
+        dest: /usr/local/sbin/tera-writer.sh
+        mode: "0755"
+      when: inventory_hostname == 'db03'
+
+    - name: Start writer on db03 against db01
+      ansible.builtin.command:
+        cmd: >-
+          systemd-run --unit=tera-writer --collect /usr/local/sbin/tera-writer.sh
+          {{ hostvars['db01']['ansible_facts']['default_ipv4']['address'] }} /root/tera-acked.log
+      changed_when: true
+      when: inventory_hostname == 'db03'
+
+    - name: Wait for acknowledged writes
+      ansible.builtin.command:
+        cmd: wc -l /root/tera-acked.log
+      register: _se_acked_count
+      until: _se_acked_count.stdout.split()[0] | int >= 50
+      retries: 30
+      delay: 1
+      changed_when: false
+      when: inventory_hostname == 'db03'
+
+- name: Power off every node at once
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Hard reset without syncing disks
+      ansible.builtin.shell:
+        cmd: sleep 2; echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger
+      async: 30
+      poll: 0
+      changed_when: true
+
+    - name: Wait for the node to go down
+      ansible.builtin.wait_for:
+        timeout: 15
+      delegate_to: localhost
+      become: false
+
+    - name: Wait for the node to come back
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 600
+
+    - name: Read acknowledged ids that reached the disk
+      ansible.builtin.slurp:
+        src: /root/tera-acked.log
+      register: _se_acked
+      when: inventory_hostname == 'db03'
+
+    - name: Stop writer if it was restarted
+      ansible.builtin.systemd_service:
+        name: tera-writer
+        state: stopped
+      failed_when: false
+      when: inventory_hostname == 'db03'
+
+    # Give systemd and Galera time to restart and possibly re-form the Primary component.
+    - name: Wait for a Primary component to form (up to 3 minutes)
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SHOW GLOBAL STATUS LIKE 'wsrep_cluster_status'"
+      register: _se_status
+      until: _se_status.stdout is search('Primary')
+      retries: 36
+      delay: 5
+      changed_when: false
+      failed_when: false
+
+    - name: Set outcome
+      ansible.builtin.set_fact:
+        _se_path: >-
+          {{ 'auto' if (ansible_play_hosts | map('extract', hostvars, '_se_status')
+                        | map(attribute='stdout', default='') | select('search', 'Primary') | list | length > 0)
+             else 'recover' }}
+
+- name: Handle the outcome
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_path: "{{ hostvars['db01']['_se_path'] }}"
+  tasks:
+    - name: Record which path happened
+      ansible.builtin.copy:
+        content: "{{ _se_path }}\n"
+        dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/poweroff-path.txt"
+        mode: "0644"
+
+    - name: Show which path happened
+      ansible.builtin.debug:
+        msg: >-
+          Jalur yang terjadi: {{ 'pulih sendiri (pc.recovery), deploy harus changed=0' if _se_path == 'auto'
+          else 'tidak ada Primary, deploy harus gagal lalu tera recover' }}
+
+    - name: Run deploy on the recovered cluster (path i)
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+      when: _se_path == 'auto'
+
+    - name: Assert nothing changed (path i)
+      ansible.builtin.assert:
+        that:
+          - _se_run.stdout is not search('changed=[1-9]')
+        fail_msg: "changed tasks: {{ _se_changed_tasks }}; {{ _se_run.stdout_lines | select('search', 'changed=') | list }}"
+      when: _se_path == 'auto'
+
+    - name: Run deploy on a dead cluster (path ii)
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect: "Tera tidak mem-bootstrap ulang secara otomatis"
+          expect_also: "./tera recover"
+      when: _se_path == 'recover'
+
+    - name: Run recover (path ii)
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-recover.yml
+          expect_success: true
+      when: _se_path == 'recover'
+
+- name: Check acknowledged rows survived
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Count acknowledged rows
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query: "SELECT COUNT(*) AS n FROM app.recover_t WHERE id IN ({{ _se_ids | join(',') }})"
+      register: _se_rows
+      vars:
+        _se_ids: "{{ (hostvars['db03']['_se_acked']['content'] | b64decode).split() | map('int') | list }}"
+
+    - name: Assert every acknowledged row exists on every node
+      ansible.builtin.assert:
+        that:
+          - _se_rows.query_result[0][0]['n'] | int == _se_expected | length
+          - _se_expected | length >= 50
+      vars:
+        _se_expected: "{{ (hostvars['db03']['_se_acked']['content'] | b64decode).split() }}"
