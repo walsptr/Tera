@@ -1,2 +1,16 @@
 ---
-[]
+# Wait until this node is Synced (wsrep_local_state = 4). Timeouts: mariadb_wait_retries x
+# mariadb_wait_delay (docs/GALERA-LIFECYCLE.md); large SSTs may need higher values.
+# Skipped in --check: the service was not really (re)started.
+- name: Wait for Galera node to be Synced
+  ansible.builtin.command:
+    cmd: mariadb -N -B -e "SHOW GLOBAL STATUS LIKE 'wsrep_local_state'"
+  register: _mariadb_wsrep_state
+  until:
+    - _mariadb_wsrep_state.rc == 0
+    - _mariadb_wsrep_state.stdout.split() | last | default('') == '4'
+  retries: "{{ mariadb_wait_retries }}"
+  delay: "{{ mariadb_wait_delay }}"
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode

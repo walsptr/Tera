@@ -41,7 +41,7 @@ CI `molecule-podman` belum pernah jalan karena repo belum di-push ke GitHub.
 - [ ] `status.yml` (belum diverifikasi: dicentang bersama `galera.yml`)
 - [ ] `galera.yml` (bootstrap / join sesuai `docs/GALERA-LIFECYCLE.md`)
 - [ ] Template `[galera]`, paket galera/mariabackup/socat, user SST, `98-tera-sst.cnf` (belum diverifikasi: dicentang bersama `galera.yml`)
-- [ ] `wait_synced.yml`
+- [ ] `wait_synced.yml` (belum diverifikasi: dicentang bersama `galera.yml`)
 - [ ] Cabang galera di `restart.yml` (rolling restart + `wait_synced`; diverifikasi di Molecule `reconfigure`)
 - [ ] Prechecks galera
 - [ ] SELinux (port Galera, `mysqld_t` permissive opsional)
