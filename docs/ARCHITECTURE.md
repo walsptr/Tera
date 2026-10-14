@@ -19,7 +19,7 @@ roles/tera_defaults/defaults/main.yml
 roles/common/tasks/{prechecks,deploy,reconfigure}.yml
 roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
   tasks entry point: prechecks deploy reconfigure restart recover destroy
-  tasks internal:    vars install config status standalone galera users clustercheck selinux wait_synced
+  tasks internal:    vars install firewall config status standalone galera users clustercheck selinux wait_synced
   templates:         tera.cnf.j2 tera-clustercheck.j2 tera-clustercheck.socket.j2 tera-clustercheck@.service.j2
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
 inventory/sample/{hosts.yml,group_vars/all/{tera.yml,passwords.yml},config/{mariadb,haproxy/conf.d,keepalived}}
@@ -144,6 +144,7 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_admin_hosts` | `["localhost"]` (list host/subnet, mis. `"10.10.10.%"`; `"%"` memicu warning prechecks; host yang dihapus dari list tidak di-drop otomatis) |
 | `mariadb_databases` / `mariadb_users` | `[]` |
 | `mariadb_sst_user` | `tera_sst` (`@localhost`; password dari `mariadb_sst_password`) |
+| `mariadb_firewall_manage` | `true` (mode galera, hanya jika firewalld berjalan; ADR 0010) |
 
 
 ## Topologi HA
@@ -176,6 +177,11 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | 9200/tcp | tera-clustercheck |
 | 8404/tcp | HAProxy stats |
 | protokol 112 | VRRP |
+
+Firewall (ADR 0010): di mode galera, jika firewalld berjalan, Tera membuka 4567/tcp, 4567/udp, 4568/tcp, dan
+4444/tcp **hanya dari alamat node cluster** (rich rule), serta `mariadb_port` dan `mariadb_clustercheck_port`
+di zona default. Tera tidak menyalakan firewalld dan tidak mengelola ufw (prechecks memberi peringatan jika
+ufw aktif). Matikan dengan `mariadb_firewall_manage: false` jika firewall dikelola sendiri.
 
 ## Artefak di node
 

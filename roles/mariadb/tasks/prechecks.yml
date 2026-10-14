@@ -64,3 +64,23 @@
       - tera_config_dir is match('^/')
     fail_msg: "tera_config_dir harus path absolut (sekarang '{{ tera_config_dir }}'). Gunakan default atau path absolut."
     quiet: true
+
+- name: Check ufw status
+  ansible.builtin.command:
+    cmd: ufw status
+  register: _mariadb_ufw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: mariadb_cluster_mode == 'galera'
+
+- name: Warn when ufw is active
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: ufw aktif di {{ inventory_hostname }}. Tera tidak mengelola ufw (ADR 0010).
+      Buka port Galera dari setiap node cluster (4567/tcp, 4567/udp, 4568/tcp, 4444/tcp), mis.
+      ufw allow proto tcp from <ip-node> to any port 4567,4568,4444 dan ufw allow proto udp from <ip-node>
+      to any port 4567, serta {{ mariadb_port }}/tcp dan {{ mariadb_clustercheck_port }}/tcp untuk klien/HAProxy.
+  when:
+    - mariadb_cluster_mode == 'galera'
+    - "(_mariadb_ufw.stdout | default('')) is search('Status: active')"

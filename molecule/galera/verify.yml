@@ -82,6 +82,28 @@
         _verify_text: "{{ _verify_cnf['content'] | b64decode }}"
       no_log: true
 
+    - name: Read firewalld rules
+      ansible.builtin.command:
+        cmd: firewall-cmd --list-all
+      register: _verify_fw
+      changed_when: false
+      when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+
+    # ADR 0010: client/clustercheck ports open, Galera ports only from cluster nodes.
+    - name: Check firewalld rules
+      ansible.builtin.assert:
+        that:
+          - _verify_fw.stdout is search('ports:.*\\b' ~ mariadb_port ~ '/tcp')
+          - _verify_fw.stdout is search('ports:.*\\b' ~ mariadb_clustercheck_port ~ '/tcp')
+          - _verify_fw.stdout is not search('ports:.*\\b4567/tcp')
+          - _verify_rules | select('in', _verify_fw.stdout) | list | length == _verify_rules | length
+      vars:
+        _verify_rules: >-
+          {{ groups['mariadb'] | map('extract', hostvars, ['ansible_facts', 'default_ipv4', 'address'])
+             | map('regex_replace', '^(.*)$', 'rule family="ipv4" source address="\1" port port="4567" protocol="tcp" accept')
+             | list }}
+      when: _verify_fw is not skipped
+
     - name: Query server as admin over TCP
       ansible.mysql.mysql_query:
         login_host: "{{ _verify_address }}"

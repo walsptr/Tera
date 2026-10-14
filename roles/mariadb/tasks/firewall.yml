@@ -1,0 +1,36 @@
+---
+# firewalld for galera mode (ADR 0010): only when firewalld already runs. Galera replication, IST and
+# SST ports are opened to cluster node addresses only; the client and clustercheck ports to the zone.
+- name: Collect service facts for firewall
+  ansible.builtin.service_facts:
+
+- name: Manage firewalld
+  when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+  block:
+    - name: Open MariaDB client and clustercheck ports
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - "{{ mariadb_port }}/tcp"
+        - "{{ mariadb_clustercheck_port }}/tcp"
+
+    - name: Allow Galera ports from cluster nodes only
+      ansible.posix.firewalld:
+        rich_rule: >-
+          rule family="ipv4" source address="{{ item.0 }}"
+          port port="{{ item.1.split('/')[0] }}" protocol="{{ item.1.split('/')[1] }}" accept
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ groups['mariadb'] | map('extract', hostvars, 'tera_listen_address') | product(_mariadb_galera_ports) | list }}"
+      loop_control:
+        label: "{{ item.0 }} -> {{ item.1 }}"
+      vars:
+        _mariadb_galera_ports:
+          - 4567/tcp
+          - 4567/udp
+          - 4568/tcp
+          - 4444/tcp

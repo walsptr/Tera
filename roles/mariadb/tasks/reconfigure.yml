@@ -5,6 +5,12 @@
 - name: Load variables
   ansible.builtin.import_tasks: vars.yml
 
+- name: Open firewall ports
+  ansible.builtin.include_tasks: firewall.yml
+  when:
+    - mariadb_cluster_mode == 'galera'
+    - mariadb_firewall_manage | bool
+
 - name: Configure MariaDB
   ansible.builtin.import_tasks: config.yml
 
