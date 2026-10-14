@@ -42,6 +42,17 @@
       when: mariadb_cluster_mode == 'galera'
       no_log: true
 
+    # tera-clustercheck only reads SHOW GLOBAL STATUS: no privilege needed (ADR 0005).
+    - name: Create clustercheck user
+      ansible.mysql.mysql_user:
+        name: "{{ mariadb_clustercheck_user }}"
+        host: localhost
+        password: "{{ mariadb_clustercheck_password }}"
+        priv: "*.*:USAGE"
+        state: present
+      when: mariadb_cluster_mode == 'galera'
+      no_log: true
+
     - name: Manage databases
       ansible.mysql.mysql_db:
         name: "{{ item.name }}"

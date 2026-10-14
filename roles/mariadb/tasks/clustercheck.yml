@@ -1,2 +1,48 @@
 ---
-[]
+# tera-clustercheck (ADR 0005): HTTP 200 only when the node is Synced. systemd socket activation
+# (Accept=yes) on tera_listen_address:mariadb_clustercheck_port, one service instance per
+# connection, as user mysql. The DB user is created by users.yml on the bootstrap host.
+- name: Write clustercheck credentials
+  ansible.builtin.copy:
+    content: |
+      # Managed by Tera - JANGAN edit manual
+      # Kredensial tera-clustercheck. Ubah lewat mariadb_clustercheck_password.
+      [client]
+      user = {{ mariadb_clustercheck_user }}
+      password = {{ mariadb_clustercheck_password }}
+      socket = {{ _mariadb_socket }}
+    dest: "{{ tera_state_dir }}/clustercheck.cnf"
+    owner: root
+    group: mysql
+    mode: "0640"
+  diff: false
+  no_log: true
+
+- name: Install clustercheck script
+  ansible.builtin.template:
+    src: tera-clustercheck.j2
+    dest: /usr/local/bin/tera-clustercheck
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install clustercheck systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - tera-clustercheck.socket
+    - tera-clustercheck@.service
+  register: _mariadb_clustercheck_units
+
+# A changed socket unit (e.g. new address) only takes effect after a socket restart. Restarting the
+# socket does not touch MariaDB.
+- name: Enable and start clustercheck socket
+  ansible.builtin.systemd_service:
+    name: tera-clustercheck.socket
+    enabled: true
+    daemon_reload: "{{ _mariadb_clustercheck_units is changed }}"
+    state: "{{ 'restarted' if _mariadb_clustercheck_units is changed else 'started' }}"

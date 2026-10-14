@@ -22,6 +22,8 @@ mariadb_sst_user: tera_sst
 # A node that will receive an SST without the bootstrap marker must not hold user databases (SST
 # overwrites the datadir). Set true only to discard that data on purpose.
 mariadb_galera_allow_sst_overwrite: false
+# tera-clustercheck user (ADR 0005), password from mariadb_clustercheck_password.
+mariadb_clustercheck_user: tera_clustercheck
 # Open the Galera ports in firewalld when it runs (ADR 0010). ufw is never managed.
 mariadb_firewall_manage: true
 # Make the SELinux domain mysqld_t permissive (RHEL). Off by default: Tera labels the Galera ports

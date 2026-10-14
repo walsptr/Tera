@@ -47,7 +47,7 @@ CI `molecule-podman` belum pernah jalan karena repo belum di-push ke GitHub.
 - [x] Firewall: firewalld untuk port Galera (ADR 0010)
 - [ ] SELinux (port Galera, `mysqld_t` permissive opsional) (belum diverifikasi: Rocky 9 enforcing lulus tanpa denial secara manual; assert AVC di verify menunggu run berikutnya)
 - [ ] `tera recover`
-- [ ] Clustercheck
+- [x] Clustercheck
 - [ ] Molecule `galera`, `reconfigure`, `recover`
 
 ## Fase 3 — Load balancer

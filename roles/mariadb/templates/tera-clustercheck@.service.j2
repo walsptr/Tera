@@ -1,0 +1,15 @@
+# Managed by Tera - JANGAN edit manual
+# Galera health check, one instance per connection (ADR 0005).
+[Unit]
+Description=Tera Galera clustercheck
+After=network.target
+
+[Service]
+Type=simple
+User=mysql
+Group=mysql
+ExecStart=/usr/local/bin/tera-clustercheck
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStopSec=5

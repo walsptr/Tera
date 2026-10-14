@@ -1,0 +1,12 @@
+# Managed by Tera - JANGAN edit manual
+# Galera health check socket (ADR 0005).
+[Unit]
+Description=Tera Galera clustercheck socket
+
+[Socket]
+ListenStream={{ tera_listen_address }}:{{ mariadb_clustercheck_port }}
+FreeBind=true
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

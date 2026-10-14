@@ -48,7 +48,7 @@
 - name: Stop one node
   hosts: mariadb
   become: true
-  gather_facts: false
+  gather_facts: true
   tasks:
     - name: Read MariaDB start time before
       ansible.builtin.systemd_service:
@@ -59,6 +59,20 @@
       ansible.builtin.systemd_service:
         name: mariadb
         state: stopped
+      when: inventory_hostname == 'db02'
+
+    # ADR 0005: the socket keeps answering, with 503 while the node is not Synced.
+    - name: Query clustercheck on the stopped node
+      ansible.builtin.uri:
+        url: "http://{{ ansible_facts['default_ipv4']['address'] }}:9200/"
+        status_code: [200, 503]
+      register: _se_clustercheck_stopped
+      when: inventory_hostname == 'db02'
+
+    - name: Assert clustercheck reports 503 on the stopped node
+      ansible.builtin.assert:
+        that:
+          - _se_clustercheck_stopped.status == 503
       when: inventory_hostname == 'db02'
 
 - name: Deploy
@@ -81,6 +95,41 @@
       vars:
         _se_before: "{{ _se_started_before.status.ActiveEnterTimestampMonotonic }}"
         _se_after: "{{ _se_started_after.status.ActiveEnterTimestampMonotonic }}"
+
+- name: Clustercheck on a desynced node
+  hosts: db03
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Desync db03
+      ansible.builtin.command:
+        cmd: mariadb -e "SET GLOBAL wsrep_desync = ON"
+      changed_when: true
+
+    - name: Query clustercheck while desynced
+      ansible.builtin.uri:
+        url: "http://{{ ansible_facts['default_ipv4']['address'] }}:9200/"
+        status_code: [200, 503]
+      register: _se_clustercheck_desynced
+
+    - name: Resync db03
+      ansible.builtin.command:
+        cmd: mariadb -e "SET GLOBAL wsrep_desync = OFF"
+      changed_when: true
+
+    - name: Query clustercheck after resync
+      ansible.builtin.uri:
+        url: "http://{{ ansible_facts['default_ipv4']['address'] }}:9200/"
+        status_code: [200, 503]
+      register: _se_clustercheck_resynced
+      until: _se_clustercheck_resynced.status == 200
+      retries: 10
+      delay: 1
+
+    - name: Assert 503 while desynced (mariadb_clustercheck_available_when_donor is false)
+      ansible.builtin.assert:
+        that:
+          - _se_clustercheck_desynced.status == 503
 
 - name: Turn db03 into a node without marker that holds data
   hosts: db03

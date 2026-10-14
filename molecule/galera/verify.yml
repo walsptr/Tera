@@ -120,6 +120,18 @@
         fail_msg: "SELinux denial untuk mysqld_t: {{ _verify_avc.stdout_lines | select('search', 'avc:') | list }}"
       when: _verify_avc is not skipped
 
+    - name: Query tera-clustercheck
+      ansible.builtin.uri:
+        url: "http://{{ _verify_address }}:{{ mariadb_clustercheck_port }}/"
+        return_content: true
+      register: _verify_clustercheck
+
+    - name: Check clustercheck reports Synced
+      ansible.builtin.assert:
+        that:
+          - _verify_clustercheck.status == 200
+          - "'Synced' in _verify_clustercheck.content"
+
     - name: Query server as admin over TCP
       ansible.mysql.mysql_query:
         login_host: "{{ _verify_address }}"

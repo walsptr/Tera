@@ -1,0 +1,27 @@
+#!/bin/bash
+# Managed by Tera - JANGAN edit manual
+# Galera health check for HAProxy (ADR 0005). Started per connection by tera-clustercheck.socket
+# (Accept=yes) as user mysql. HTTP 200 only when the node is Synced (wsrep_local_state = 4), or
+# Donor/Desynced (2) when mariadb_clustercheck_available_when_donor is true; 503 otherwise.
+set -u
+
+available_when_donor={{ 1 if mariadb_clustercheck_available_when_donor | bool else 0 }}
+
+# Consume the request line so the client does not see a reset; never block for long.
+read -r -t 1 _request || true
+
+state=$(mariadb --defaults-extra-file={{ tera_state_dir }}/clustercheck.cnf -N -B \
+  -e "SHOW GLOBAL STATUS LIKE 'wsrep_local_state'" 2>/dev/null | awk '{print $2}')
+
+if [ "$state" = "4" ] || { [ "$available_when_donor" = "1" ] && [ "$state" = "2" ]; }; then
+  code="200 OK"
+  body="Galera node is Synced (state ${state})"
+else
+  code="503 Service Unavailable"
+  body="Galera node is not Synced (state ${state:-unknown})"
+fi
+
+# Length via wc: the bash length operator would start a Jinja comment in this template.
+length=$(printf '%s' "$body" | wc -c)
+printf 'HTTP/1.1 %s\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s' \
+  "$code" "$length" "$body"
