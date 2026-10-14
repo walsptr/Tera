@@ -5,9 +5,12 @@ Usage in a task:
     {{ tera_vip_address | tera_is_ipv4 }}
     {{ mariadb_client_sources | map('tera_is_ipv4_network') | list }}
     {{ tera_vip_address | tera_ipv4_in_network('10.77.0.0/24') }}
+    {{ mariadb_client_sources | map('tera_fw_rich_rule', '3306/tcp') | list }}
 
-Every filter returns a boolean and never raises on bad input, so prechecks can print a clear
-message instead of a Python traceback. Tests: plugins/tests/test_tera_ip.py.
+The checks return a boolean and never raise on bad input, so prechecks can print a clear message
+instead of a Python traceback. tera_fw_rich_rule formats a firewalld rich rule exactly as firewalld
+lists it back, so roles can compare expected and current rules as text (ADR 0011).
+Tests: plugins/tests/test_tera_ip.py.
 """
 
 from __future__ import annotations
@@ -56,10 +59,25 @@ def tera_ipv4_in_network(address, network):
     return ipaddress.IPv4Address(address.strip()) in net
 
 
+def tera_fw_rich_rule(source, port_spec=None):
+    """firewalld rich rule accepting ``port_spec`` ("3306/tcp") from ``source`` (IPv4 or CIDR).
+
+    ``source`` may also be a ``[source, port_spec]`` pair (e.g. from ``product``).
+    """
+    if port_spec is None and isinstance(source, (list, tuple)) and len(source) == 2:
+        source, port_spec = source
+    port, _, proto = str(port_spec).partition("/")
+    return (
+        f'rule family="ipv4" source address="{str(source).strip()}" '
+        f'port port="{port}" protocol="{proto or "tcp"}" accept'
+    )
+
+
 class FilterModule:
     def filters(self):
         return {
             "tera_is_ipv4": tera_is_ipv4,
             "tera_is_ipv4_network": tera_is_ipv4_network,
             "tera_ipv4_in_network": tera_ipv4_in_network,
+            "tera_fw_rich_rule": tera_fw_rich_rule,
         }

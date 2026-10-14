@@ -89,12 +89,14 @@
       changed_when: false
       when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
 
-    # ADR 0010: client/clustercheck ports open, Galera ports only from cluster nodes.
+    # ADR 0011: client port open for the zone (default sources), clustercheck not open for the zone
+    # (no loadbalancer group here), Galera ports only from cluster nodes.
     - name: Check firewalld rules
       ansible.builtin.assert:
         that:
           - _verify_fw.stdout is search('ports:.*\\b' ~ mariadb_port ~ '/tcp')
-          - _verify_fw.stdout is search('ports:.*\\b' ~ mariadb_clustercheck_port ~ '/tcp')
+          - _verify_fw.stdout is not search('ports:.*\\b' ~ mariadb_clustercheck_port ~ '/tcp')
+          - _verify_fw.stdout is not search('port port="' ~ mariadb_clustercheck_port ~ '"')
           - _verify_fw.stdout is not search('ports:.*\\b4567/tcp')
           - _verify_rules | select('in', _verify_fw.stdout) | list | length == _verify_rules | length
       vars:
@@ -132,6 +134,33 @@
         that:
           - _verify_clustercheck.status == 200
           - "'Synced' in _verify_clustercheck.content"
+
+    # From the Molecule host, i.e. from outside the VMs.
+    - name: Connect to MariaDB from outside the VM
+      ansible.builtin.wait_for:
+        host: "{{ _verify_address }}"
+        port: "{{ mariadb_port }}"
+        search_regex: MariaDB
+        timeout: 10
+      delegate_to: localhost
+      become: false
+
+    - name: Connect to clustercheck from outside the VM
+      ansible.builtin.wait_for:
+        host: "{{ _verify_address }}"
+        port: "{{ mariadb_clustercheck_port }}"
+        timeout: 5
+      delegate_to: localhost
+      become: false
+      register: _verify_cc_outside
+      ignore_errors: true
+      when: _verify_fw is not skipped
+
+    - name: Check clustercheck is closed to the outside where firewalld runs (ADR 0011)
+      ansible.builtin.assert:
+        that:
+          - _verify_cc_outside is failed
+      when: _verify_fw is not skipped
 
     - name: Query server as admin over TCP
       ansible.mysql.mysql_query:

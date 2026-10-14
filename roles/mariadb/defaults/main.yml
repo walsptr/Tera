@@ -27,7 +27,7 @@ mariadb_clustercheck_user: tera_clustercheck
 # `tera recover`: force the bootstrap node (inventory hostname). Empty = choose automatically
 # (safe_to_bootstrap: 1, then highest seqno). Forcing a node with older data loses the newer data.
 mariadb_recover_from: ""
-# Open the Galera ports in firewalld when it runs (ADR 0010). ufw is never managed.
+# Manage firewalld when it runs, in both modes (ADR 0011). ufw is never managed.
 mariadb_firewall_manage: true
 # Make the SELinux domain mysqld_t permissive (RHEL). Off by default: Tera labels the Galera ports
 # and loads a minimal tera_galera policy module instead.

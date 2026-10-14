@@ -121,6 +121,7 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `mariadb_cluster_mode` | `standalone` |
 | `mariadb_version` | `"11.4"` |
 | `mariadb_port` | `3306` |
+| `mariadb_client_sources` | `["0.0.0.0/0"]` (IPv4/CIDR yang boleh ke `mariadb_port` saat Tera mengelola firewalld; juga untuk port VIP) |
 | `mariadb_bootstrap_host` | `groups['mariadb'][0]` |
 | `mariadb_galera_min_nodes` | `3` |
 | `mariadb_clustercheck_port` | `9200` |
@@ -148,7 +149,7 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_clustercheck_user` | `tera_clustercheck` (`@localhost`, tanpa privilege; password dari `mariadb_clustercheck_password`) |
 | `mariadb_recover_from` | `""` (`tera recover`: paksa node bootstrap; kosong = otomatis) |
 | `mariadb_datadir` | `/var/lib/mysql` (dibaca pengaman SST dan `tera recover`; samakan jika custom config mengubah datadir) |
-| `mariadb_firewall_manage` | `true` (mode galera, hanya jika firewalld berjalan; ADR 0010) |
+| `mariadb_firewall_manage` | `true` (kedua mode, hanya jika firewalld berjalan; ADR 0011) |
 | `mariadb_selinux_permissive` | `false` (`true` = domain `mysqld_t` permissive; tidak disarankan) |
 
 
@@ -190,10 +191,19 @@ yang diperbaikinya; semuanya terbatas pada domain `mysqld_t` sendiri (`setpgid` 
 `connectto` socket server oleh mariabackup di donor, `sendto` datagram oleh socat di joiner). 4567/tcp sudah
 `tram_port_t` dan boleh di-bind `mysqld_t`.
 
-Firewall (ADR 0010): di mode galera, jika firewalld berjalan, Tera membuka 4567/tcp, 4567/udp, 4568/tcp, dan
-4444/tcp **hanya dari alamat node cluster** (rich rule), serta `mariadb_port` dan `mariadb_clustercheck_port`
-di zona default. Tera tidak menyalakan firewalld dan tidak mengelola ufw (prechecks memberi peringatan jika
-ufw aktif). Matikan dengan `mariadb_firewall_manage: false` jika firewall dikelola sendiri.
+Firewall (ADR 0011, menggantikan ADR 0010): jika firewalld berjalan, di **kedua mode** Tera mengelola zona
+default:
+
+| Port | Sumber |
+|---|---|
+| `mariadb_port` (3306/tcp) | `mariadb_client_sources` (default `0.0.0.0/0` = port dibuka untuk zona; selain itu rich rule per sumber) |
+| `mariadb_clustercheck_port` (9200/tcp, galera) | hanya alamat node group `loadbalancer` (group kosong = tertutup) |
+| 4567/tcp+udp, 4568/tcp, 4444/tcp (galera) | hanya alamat node cluster |
+
+Tera memiliki rich rule untuk port-port itu di zona default dan menyamakannya setiap deploy/reconfigure: rule
+dengan sumber yang tidak lagi diharapkan dihapus, termasuk rule buatan tangan untuk port yang sama. Tera tidak
+menyalakan firewalld dan tidak mengelola ufw (prechecks memberi peringatan jika ufw aktif). Matikan dengan
+`mariadb_firewall_manage: false` jika firewall dikelola sendiri.
 
 ## Artefak di node
 

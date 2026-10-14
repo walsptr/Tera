@@ -1,6 +1,50 @@
 ---
-# ADR 0009 test: a run interrupted after 99-tera.cnf was written must still restart next time.
+# 1. ADR 0011 (vagrant, firewalld running): with mariadb_client_sources not covering the Molecule host,
+#    the host cannot reach 3306. The next converge restores the default sources (verify checks access).
+# 2. ADR 0009: a run interrupted after 99-tera.cnf was written must still restart next time.
 # Sequence: idempotence -> side_effect (this) -> converge -> verify.
+
+- name: Check whether firewalld runs
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Remember firewalld state
+      ansible.builtin.set_fact:
+        _se_firewalld: >-
+          {{ ((ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running')
+             and lookup('ansible.builtin.env', 'MOLECULE_DRIVER_NAME') == 'vagrant' }}
+
+- name: Restrict client sources
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Deploy with sources that exclude the Molecule host
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: [-e, '{"mariadb_client_sources": ["10.255.255.0/24"]}']
+          expect_success: true
+      when: hostvars['db01']['_se_firewalld'] | bool
+
+    - name: Connect to MariaDB from the Molecule host
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['db01']['ansible_facts']['default_ipv4']['address'] }}"
+        port: 3306
+        timeout: 5
+      register: _se_refused
+      ignore_errors: true
+      when: hostvars['db01']['_se_firewalld'] | bool
+
+    - name: Assert the host is refused
+      ansible.builtin.assert:
+        that:
+          - _se_refused is failed
+      when: hostvars['db01']['_se_firewalld'] | bool
 
 - name: Add a pending config change
   hosts: localhost

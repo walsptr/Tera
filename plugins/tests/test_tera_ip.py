@@ -1,7 +1,13 @@
 """Tests for the tera_ip filters (IPv4, CIDR, address in subnet)."""
 
 import pytest
-from tera_ip import FilterModule, tera_ipv4_in_network, tera_is_ipv4, tera_is_ipv4_network
+from tera_ip import (
+    FilterModule,
+    tera_fw_rich_rule,
+    tera_ipv4_in_network,
+    tera_is_ipv4,
+    tera_is_ipv4_network,
+)
 
 
 @pytest.mark.parametrize("value", ["10.0.0.5", "192.168.121.1", "0.0.0.0", " 10.0.0.5 "])
@@ -61,5 +67,22 @@ def test_in_network_false(address, network):
 
 
 def test_filter_module_exports():
-    expected = {"tera_is_ipv4", "tera_is_ipv4_network", "tera_ipv4_in_network"}
+    expected = {"tera_is_ipv4", "tera_is_ipv4_network", "tera_ipv4_in_network", "tera_fw_rich_rule"}
     assert set(FilterModule().filters()) == expected
+
+
+def test_fw_rich_rule_matches_firewalld_listing():
+    # Same text firewall-cmd --list-all prints (checked on Rocky 9 in the galera scenario).
+    assert tera_fw_rich_rule("192.168.121.38", "4567/tcp") == (
+        'rule family="ipv4" source address="192.168.121.38" port port="4567" protocol="tcp" accept'
+    )
+
+
+def test_fw_rich_rule_pair_and_cidr():
+    assert tera_fw_rich_rule(["10.0.0.0/24", "4567/udp"]) == (
+        'rule family="ipv4" source address="10.0.0.0/24" port port="4567" protocol="udp" accept'
+    )
+
+
+def test_fw_rich_rule_int_port_defaults_to_tcp():
+    assert tera_fw_rich_rule("10.0.0.5", 3306).endswith('port port="3306" protocol="tcp" accept')

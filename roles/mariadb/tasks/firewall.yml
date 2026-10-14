@@ -1,36 +1,70 @@
 ---
-# firewalld for galera mode (ADR 0010): only when firewalld already runs. Galera replication, IST and
-# SST ports are opened to cluster node addresses only; the client and clustercheck ports to the zone.
+# firewalld for MariaDB (ADR 0011): only when firewalld already runs, in standalone and galera mode,
+# default zone. Tera owns the rich rules for its ports there and reconciles them on every run.
 - name: Collect service facts for firewall
   ansible.builtin.service_facts:
 
 - name: Manage firewalld
   when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
   block:
-    - name: Open MariaDB client and clustercheck ports
-      ansible.posix.firewalld:
-        port: "{{ item }}"
-        permanent: true
-        immediate: true
-        state: enabled
-      loop:
-        - "{{ mariadb_port }}/tcp"
-        - "{{ mariadb_clustercheck_port }}/tcp"
-
-    - name: Allow Galera ports from cluster nodes only
-      ansible.posix.firewalld:
-        rich_rule: >-
-          rule family="ipv4" source address="{{ item.0 }}"
-          port port="{{ item.1.split('/')[0] }}" protocol="{{ item.1.split('/')[1] }}" accept
-        permanent: true
-        immediate: true
-        state: enabled
-      loop: "{{ groups['mariadb'] | map('extract', hostvars, 'tera_listen_address') | product(_mariadb_galera_ports) | list }}"
-      loop_control:
-        label: "{{ item.0 }} -> {{ item.1 }}"
+    - name: Compute expected firewall rules
+      ansible.builtin.set_fact:
+        _mariadb_fw_client_open: "{{ '0.0.0.0/0' in mariadb_client_sources }}"
+        _mariadb_fw_owned_ports: >-
+          {{ [mariadb_port | string, mariadb_clustercheck_port | string] + _mariadb_galera_port_numbers }}
+        _mariadb_fw_rules: >-
+          {{ ([] if '0.0.0.0/0' in mariadb_client_sources else
+              mariadb_client_sources | map('tera_fw_rich_rule', mariadb_port ~ '/tcp') | list)
+             + ((_mariadb_lb_addresses | map('tera_fw_rich_rule', mariadb_clustercheck_port ~ '/tcp') | list)
+                if mariadb_cluster_mode == 'galera' else [])
+             + ((_mariadb_node_addresses | product(_mariadb_galera_ports)
+                 | map('tera_fw_rich_rule') | list)
+                if mariadb_cluster_mode == 'galera' else []) }}
       vars:
-        _mariadb_galera_ports:
-          - 4567/tcp
-          - 4567/udp
-          - 4568/tcp
-          - 4444/tcp
+        _mariadb_galera_port_numbers: ["4567", "4568", "4444"]
+        _mariadb_galera_ports: ["4567/tcp", "4567/udp", "4568/tcp", "4444/tcp"]
+        _mariadb_node_addresses: "{{ groups['mariadb'] | map('extract', hostvars, 'tera_listen_address') | list }}"
+        _mariadb_lb_addresses: >-
+          {{ (groups['loadbalancer'] | default([])) | map('extract', hostvars, 'tera_listen_address') | list }}
+
+    - name: Read current firewalld rules
+      ansible.posix.firewalld_info:
+        active_zones: true
+      register: _mariadb_fw_info
+      check_mode: false
+
+    - name: Open or close the client port for the whole zone
+      ansible.posix.firewalld:
+        port: "{{ mariadb_port }}/tcp"
+        permanent: true
+        immediate: true
+        state: "{{ 'enabled' if _mariadb_fw_client_open else 'disabled' }}"
+
+    # Opened for the whole zone under ADR 0010; now only from the load balancers (rich rules, ADR 0011).
+    - name: Close the clustercheck port for the whole zone
+      ansible.posix.firewalld:
+        port: "{{ mariadb_clustercheck_port }}/tcp"
+        permanent: true
+        immediate: true
+        state: disabled
+
+    - name: Remove Tera rich rules that are no longer expected
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop: >-
+        {{ (_mariadb_fw_zone.rich_rules | default([]))
+           | select('search', 'port port="(' ~ (_mariadb_fw_owned_ports | join('|')) ~ ')"')
+           | reject('in', _mariadb_fw_rules) | list }}
+      vars:
+        _mariadb_fw_zone: "{{ _mariadb_fw_info.firewalld_info.zones[_mariadb_fw_info.firewalld_info.default_zone] }}"
+
+    - name: Add expected Tera rich rules
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ _mariadb_fw_rules }}"

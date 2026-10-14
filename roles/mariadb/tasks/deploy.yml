@@ -8,12 +8,10 @@
 - name: Install MariaDB
   ansible.builtin.import_tasks: install.yml
 
-# Before any galera node starts: joiners must reach the other nodes (ADR 0010).
+# Before MariaDB starts: clients and galera joiners must reach the node (ADR 0011).
 - name: Open firewall ports
   ansible.builtin.include_tasks: firewall.yml
-  when:
-    - mariadb_cluster_mode == 'galera'
-    - mariadb_firewall_manage | bool
+  when: mariadb_firewall_manage | bool
 
 - name: Configure SELinux for Galera
   ansible.builtin.include_tasks: selinux.yml

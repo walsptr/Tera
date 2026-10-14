@@ -78,3 +78,15 @@
       ansible.builtin.assert:
         that:
           - not _verify_marker.stat.exists
+
+    # From the Molecule host, i.e. from outside the VM (ADR 0011). Not for podman: rootless containers
+    # share the host address.
+    - name: Connect to MariaDB from outside the VM
+      ansible.builtin.wait_for:
+        host: "{{ _verify_address }}"
+        port: "{{ mariadb_port }}"
+        search_regex: MariaDB
+        timeout: 10
+      delegate_to: localhost
+      become: false
+      when: lookup('ansible.builtin.env', 'MOLECULE_DRIVER_NAME') == 'vagrant'

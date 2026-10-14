@@ -65,6 +65,25 @@
     fail_msg: "tera_config_dir harus path absolut (sekarang '{{ tera_config_dir }}'). Gunakan default atau path absolut."
     quiet: true
 
+- name: Check mariadb_client_sources
+  ansible.builtin.assert:
+    that:
+      - mariadb_client_sources is sequence
+      - mariadb_client_sources is not string
+      - mariadb_client_sources | length > 0
+      - _mariadb_bad_sources | length == 0
+    fail_msg: >-
+      mariadb_client_sources harus list IPv4/CIDR yang tidak kosong (mis. ["10.10.10.0/24", "10.20.0.5"],
+      default ["0.0.0.0/0"]). Entri tidak valid: {{ _mariadb_bad_sources }}.
+      CIDR tidak boleh punya bit host: tulis "10.0.0.0/24", bukan "10.0.0.5/24".
+    quiet: true
+  vars:
+    _mariadb_bad_sources: >-
+      {{ (mariadb_client_sources | zip(mariadb_client_sources | map('tera_is_ipv4_network'))
+          | rejectattr('1') | map(attribute='0') | list)
+         if (mariadb_client_sources is sequence and mariadb_client_sources is not string)
+         else [mariadb_client_sources] }}
+
 - name: Check ufw status
   ansible.builtin.command:
     cmd: ufw status
@@ -72,18 +91,16 @@
   changed_when: false
   failed_when: false
   check_mode: false
-  when: mariadb_cluster_mode == 'galera'
 
 - name: Warn when ufw is active
   ansible.builtin.debug:
     msg: >-
-      PERINGATAN: ufw aktif di {{ inventory_hostname }}. Tera tidak mengelola ufw (ADR 0010).
-      Buka port Galera dari setiap node cluster (4567/tcp, 4567/udp, 4568/tcp, 4444/tcp), mis.
-      ufw allow proto tcp from <ip-node> to any port 4567,4568,4444 dan ufw allow proto udp from <ip-node>
-      to any port 4567, serta {{ mariadb_port }}/tcp dan {{ mariadb_clustercheck_port }}/tcp untuk klien/HAProxy.
-  when:
-    - mariadb_cluster_mode == 'galera'
-    - "(_mariadb_ufw.stdout | default('')) is search('Status: active')"
+      PERINGATAN: ufw aktif di {{ inventory_hostname }}. Tera tidak mengelola ufw (ADR 0011).
+      Buka {{ mariadb_port }}/tcp dari {{ mariadb_client_sources | join(', ') }}{% if mariadb_cluster_mode == 'galera' %},
+      port Galera dari setiap node cluster (4567/tcp, 4567/udp, 4568/tcp, 4444/tcp; mis. ufw allow proto tcp
+      from <ip-node> to any port 4567,4568,4444 dan ufw allow proto udp from <ip-node> to any port 4567), dan
+      {{ mariadb_clustercheck_port }}/tcp dari node load balancer{% endif %}.
+  when: "(_mariadb_ufw.stdout | default('')) is search('Status: active')"
 
 # 99-tera.cnf never holds secrets, and a wsrep_sst_auth there would silently override 98-tera-sst.cnf
 # (docs/CUSTOM-CONFIG.md, "Secret"). Raw scan; config.yml checks the merged result again.

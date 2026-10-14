@@ -41,6 +41,10 @@ haproxy_stats_port: 8404
 mariadb_cluster_mode: standalone # standalone | galera
 mariadb_version: "11.4"
 mariadb_port: 3306
+# Sources allowed to reach mariadb_port when Tera manages firewalld (ADR 0011): IPv4 or CIDR.
+# Default open to everyone. Also used for the VIP port on the load balancers.
+mariadb_client_sources:
+  - 0.0.0.0/0
 mariadb_bootstrap_host: "{{ groups['mariadb'][0] }}"
 mariadb_galera_min_nodes: 3
 mariadb_galera_cluster_name: "{{ inventory_dir | basename }}"
