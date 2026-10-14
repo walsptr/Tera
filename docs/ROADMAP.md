@@ -59,7 +59,9 @@ port 9200/3306 dibawa ke rencana Fase 3.
 
 ## Fase 3 — Load balancer
 
-- [ ] Role `loadbalancer` (sysctl, SELinux `haproxy_connect_any`)
+- [ ] Filter IP `tera_ip` (validasi IPv4, CIDR, IP di dalam subnet) + pytest
+- [ ] Firewall v2 (ADR 0011): perilaku sama untuk standalone dan galera, `mariadb_client_sources`, 9200 hanya dari node LB, uji TCP dari luar VM
+- [ ] Role `loadbalancer` (sysctl, SELinux `haproxy_connect_any`, firewall VRRP/VIP/stats)
 - [ ] HAProxy single/multi writer + stats + custom config
 - [ ] Keepalived unicast + custom config
 - [ ] Prechecks load balancer
