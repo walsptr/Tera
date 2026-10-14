@@ -60,9 +60,11 @@ provisioner:
           {{ lookup('ansible.builtin.password',
                     lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/clustercheck_password',
                     chars=['ascii_letters', 'digits'], length=32) }}
-        # Users are created on the bootstrap host only: list every node address explicitly.
+        # Users are created on the bootstrap host only: list every node address explicitly. Only hosts
+        # with a known address: a --limit run (negative test) has no fact cache for the others.
         mariadb_admin_hosts: >-
-          {{ ['localhost'] + (groups['mariadb'] | map('extract', hostvars, 'tera_listen_address') | list) }}
+          {{ ['localhost'] + (groups['mariadb'] | map('extract', hostvars) | selectattr('tera_listen_address', 'defined')
+             | map(attribute='tera_listen_address') | list) }}
         mariadb_databases:
           - name: app
     host_groups:

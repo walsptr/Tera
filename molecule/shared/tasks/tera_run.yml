@@ -1,0 +1,41 @@
+---
+# Run a Tera playbook in a separate ansible-playbook process against the Molecule inventory, like
+# the CLI does. Molecule's ANSIBLE_* environment (config, roles, filters, collections) is inherited.
+# _se_case:
+#   action: deploy (default) | reconfigure | ...    (-e tera_action=..., ignored for other playbooks)
+#   playbook: site.yml (default) | playbooks/mariadb-recover.yml
+#   args: [...]                extra ansible-playbook arguments
+#   expect_success: true       or: expect / expect_also = text the failed run must print
+- name: Run Tera playbook {{ _se_case.playbook | default('site.yml') }}
+  ansible.builtin.command:
+    argv: >-
+      {{ ['ansible-playbook',
+          '-i', lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/inventory',
+          lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') ~ '/' ~ (_se_case.playbook | default('site.yml')),
+          '-e', 'tera_action=' ~ (_se_case.action | default('deploy'))] + (_se_case.args | default([])) }}
+  environment:
+    ANSIBLE_NOCOLOR: "1"
+    ANSIBLE_FORCE_COLOR: "0"
+  register: _se_run
+  changed_when: true
+  failed_when: false
+
+- name: Check the run succeeded
+  ansible.builtin.assert:
+    that:
+      - _se_run.rc == 0
+    fail_msg: "rc={{ _se_run.rc }}; stderr: {{ _se_run.stderr_lines[-20:] }}; stdout tail: {{ _se_run.stdout_lines[-20:] }}"
+  when: _se_case.expect_success | default(false)
+
+- name: Check the run failed with the expected message
+  ansible.builtin.assert:
+    that:
+      - _se_run.rc != 0
+      - _se_case.expect in _se_out
+      - (_se_case.expect_also | default('')) in _se_out
+    fail_msg: "rc={{ _se_run.rc }}; stderr: {{ _se_run.stderr_lines[-20:] }}; stdout tail: {{ _se_run.stdout_lines[-20:] }}"
+  vars:
+    # Task errors go to stderr in recent ansible-core; callbacks may wrap long messages:
+    # compare on both streams with collapsed whitespace.
+    _se_out: "{{ (_se_run.stdout ~ ' ' ~ _se_run.stderr) | regex_replace('\\s+', ' ') }}"
+  when: not (_se_case.expect_success | default(false))

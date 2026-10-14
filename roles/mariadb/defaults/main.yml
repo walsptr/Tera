@@ -11,10 +11,17 @@ mariadb_repo_rpm_key_url: https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB
 
 mariadb_packages_extra: []
 
+# Data directory, read by the SST overwrite guard and `tera recover` (grastate.dat). Tera does not
+# set datadir in 99-tera.cnf; if custom config changes it, set this too.
+mariadb_datadir: /var/lib/mysql
+
 # --- Galera -----------------------------------------------------------------
 # SST user (mariabackup), password from mariadb_sst_password (passwords.yml). The credentials
 # are written to 98-tera-sst.cnf, never to 99-tera.cnf.
 mariadb_sst_user: tera_sst
+# A node that will receive an SST without the bootstrap marker must not hold user databases (SST
+# overwrites the datadir). Set true only to discard that data on purpose.
+mariadb_galera_allow_sst_overwrite: false
 # Open the Galera ports in firewalld when it runs (ADR 0010). ufw is never managed.
 mariadb_firewall_manage: true
 # Make the SELinux domain mysqld_t permissive (RHEL). Off by default: Tera labels the Galera ports

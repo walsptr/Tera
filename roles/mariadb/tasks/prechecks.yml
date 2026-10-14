@@ -84,3 +84,117 @@
   when:
     - mariadb_cluster_mode == 'galera'
     - "(_mariadb_ufw.stdout | default('')) is search('Status: active')"
+
+# 99-tera.cnf never holds secrets, and a wsrep_sst_auth there would silently override 98-tera-sst.cnf
+# (docs/CUSTOM-CONFIG.md, "Secret"). Raw scan; config.yml checks the merged result again.
+- name: Check custom config does not set wsrep_sst_auth
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.file', item) is not search('^\s*wsrep[-_]sst[-_]auth\s*(=|$)', multiline=True, ignorecase=True)
+    fail_msg: >-
+      {{ item | relpath(tera_config_dir) }} berisi wsrep_sst_auth. Hapus key itu dari custom config:
+      kredensial SST dikelola Tera di 98-tera-sst.cnf dari mariadb_sst_user dan mariadb_sst_password.
+    quiet: true
+  loop: >-
+    {{ query('ansible.builtin.fileglob', tera_config_dir ~ '/mariadb/*.cnf')
+       + query('ansible.builtin.fileglob', tera_config_dir ~ '/mariadb/' ~ inventory_hostname ~ '/*.cnf') }}
+  loop_control:
+    label: "{{ item | relpath(tera_config_dir) }}"
+
+- name: Check galera topology
+  ansible.builtin.assert:
+    that:
+      - groups['mariadb'] | length >= mariadb_galera_min_nodes | int
+      - mariadb_bootstrap_host in groups['mariadb']
+    fail_msg: >-
+      Mode galera butuh minimal {{ mariadb_galera_min_nodes }} node di group mariadb (sekarang
+      {{ groups['mariadb'] | length }}: {{ groups['mariadb'] | join(', ') }}) dan mariadb_bootstrap_host
+      ('{{ mariadb_bootstrap_host }}') harus salah satu node itu. Tambah host di hosts.yml atau perbaiki
+      mariadb_bootstrap_host di group_vars/all/tera.yml.
+    quiet: true
+  when: mariadb_cluster_mode == 'galera'
+
+- name: Warn about an even number of galera nodes
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: jumlah node galera genap ({{ groups['mariadb'] | length }}). Jika jaringan terbelah dua sama
+      besar, tidak ada sisi yang punya quorum dan cluster berhenti melayani. Gunakan jumlah node ganjil.
+  when:
+    - mariadb_cluster_mode == 'galera'
+    - groups['mariadb'] | length is even
+
+- name: Refuse --limit on galera deploy
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | sort == groups['mariadb'] | sort
+    fail_msg: >-
+      tera deploy mode galera tidak boleh memakai --limit (host di run ini: {{ ansible_play_hosts_all | join(', ') }};
+      group mariadb: {{ groups['mariadb'] | join(', ') }}). Bootstrap dan join butuh status semua node.
+      Ulangi tanpa --limit. Untuk menerapkan config ke sebagian host, pakai tera reconfigure --limit.
+    quiet: true
+  when:
+    - mariadb_cluster_mode == 'galera'
+    - tera_action == 'deploy'
+
+- name: Check galera passwords are set
+  ansible.builtin.assert:
+    that:
+      - mariadb_sst_password is defined
+      - mariadb_sst_password is string
+      - mariadb_sst_password | length > 0
+      - mariadb_clustercheck_password is defined
+      - mariadb_clustercheck_password is string
+      - mariadb_clustercheck_password | length > 0
+    fail_msg: >-
+      mariadb_sst_password atau mariadb_clustercheck_password kosong. Jalankan ./tera genpwd -i inventory/<cluster>
+      (lalu ansible-vault encrypt file passwords.yml).
+    quiet: true
+  no_log: true
+  when: mariadb_cluster_mode == 'galera'
+
+# SST overwrites the joiner datadir. A node that will receive an SST without the bootstrap marker
+# must not hold user databases (docs/GALERA-LIFECYCLE.md, "Prasyarat deploy"). Filesystem level,
+# so it works while MariaDB is stopped. The bootstrap host of a fresh cluster is the SST source.
+- name: Check data safety before SST
+  when: mariadb_cluster_mode == 'galera'
+  block:
+    - name: Load variables for status
+      ansible.builtin.include_tasks: vars.yml
+
+    - name: Read Galera status
+      ansible.builtin.include_tasks: status.yml
+
+    - name: Decide whether this node will receive an SST
+      ansible.builtin.set_fact:
+        _mariadb_sst_receiver: >-
+          {{ ((not _galera_cluster_alive) and (not _galera_ever_bootstrapped)
+              and (inventory_hostname != mariadb_bootstrap_host))
+             or (_galera_cluster_alive and (not _mariadb_wsrep_primary) and (not _mariadb_bootstrapped_marker)) }}
+
+    - name: Find databases in the datadir
+      ansible.builtin.find:
+        paths: "{{ mariadb_datadir }}"
+        file_type: directory
+        recurse: false
+      register: _mariadb_datadir_dirs
+      check_mode: false
+      when: _mariadb_sst_receiver | bool
+
+    - name: Refuse an SST that would overwrite user databases
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }} akan menerima SST
+          ({{ 'bootstrap cluster baru' if not _galera_cluster_alive else 'join tanpa marker ' ~ mariadb_galera_marker }}),
+          dan SST menimpa {{ mariadb_datadir }} yang berisi database: {{ _mariadb_user_databases | join(', ') }}.
+          {% if not _galera_cluster_alive %}Jika data ini yang harus dipertahankan, jadikan node ini sumber cluster dengan
+          mariadb_bootstrap_host: {{ inventory_hostname }} di group_vars/all/tera.yml.{% else %}Backup atau pindahkan
+          data ini dulu jika masih dibutuhkan.{% endif %}
+          Jika data ini memang boleh dibuang, ulangi dengan -e mariadb_galera_allow_sst_overwrite=true.
+      vars:
+        _mariadb_user_databases: >-
+          {{ _mariadb_datadir_dirs.files | map(attribute='path') | map('basename')
+             | reject('in', ['mysql', 'performance_schema', 'sys']) | sort | list }}
+      when:
+        - _mariadb_sst_receiver | bool
+        - _mariadb_user_databases | length > 0
+        - not (mariadb_galera_allow_sst_overwrite | bool)

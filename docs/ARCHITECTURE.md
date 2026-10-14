@@ -144,6 +144,8 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_admin_hosts` | `["localhost"]` (list host/subnet, mis. `"10.10.10.%"`; `"%"` memicu warning prechecks; host yang dihapus dari list tidak di-drop otomatis) |
 | `mariadb_databases` / `mariadb_users` | `[]` |
 | `mariadb_sst_user` | `tera_sst` (`@localhost`; password dari `mariadb_sst_password`) |
+| `mariadb_galera_allow_sst_overwrite` | `false` (lihat prasyarat deploy di `GALERA-LIFECYCLE.md`) |
+| `mariadb_datadir` | `/var/lib/mysql` (dibaca pengaman SST dan `tera recover`; samakan jika custom config mengubah datadir) |
 | `mariadb_firewall_manage` | `true` (mode galera, hanya jika firewalld berjalan; ADR 0010) |
 | `mariadb_selinux_permissive` | `false` (`true` = domain `mysqld_t` permissive; tidak disarankan) |
 

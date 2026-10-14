@@ -1,6 +1,50 @@
 ---
-# Join test (docs/GALERA-LIFECYCLE.md, "Join"): a stopped node rejoins on the next deploy, without
-# a new bootstrap and without restarting the nodes that stayed Primary.
+# Galera side effects (docs/TESTING.md):
+# 1. prechecks refuse bad input before changing anything (separate ansible-playbook runs);
+# 2. join: a stopped node rejoins on the next deploy, without a new bootstrap and without
+#    restarting the nodes that stayed Primary (docs/GALERA-LIFECYCLE.md, "Join");
+# 3. SST overwrite guard: a node without marker that holds user databases is refused, then joins
+#    with mariadb_galera_allow_sst_overwrite=true.
+- name: Negative prechecks
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_config_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config"
+  tasks:
+    - name: Run deploy with bad input
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      loop:
+        - args: [-e, mariadb_galera_min_nodes=4]
+          expect: "Mode galera butuh minimal 4 node"
+        - args: [--limit, db01]
+          expect: "tidak boleh memakai --limit"
+        - args: [-e, '{"mariadb_sst_password": ""}']
+          expect: "mariadb_sst_password atau mariadb_clustercheck_password kosong"
+      loop_control:
+        loop_var: _se_case
+        label: "{{ _se_case.expect }}"
+
+    - name: Add wsrep_sst_auth to custom config
+      ansible.builtin.copy:
+        content: |
+          [galera]
+          wsrep-sst-auth = someone:secret
+        dest: "{{ _se_config_dir }}/mariadb/zz-sst-auth.cnf"
+        mode: "0644"
+
+    - name: Run deploy with wsrep_sst_auth in custom config
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: []
+          expect: "mariadb/zz-sst-auth.cnf berisi wsrep_sst_auth"
+
+    - name: Remove wsrep_sst_auth from custom config
+      ansible.builtin.file:
+        path: "{{ _se_config_dir }}/mariadb/zz-sst-auth.cnf"
+        state: absent
+
 - name: Stop one node
   hosts: mariadb
   become: true
@@ -37,3 +81,40 @@
       vars:
         _se_before: "{{ _se_started_before.status.ActiveEnterTimestampMonotonic }}"
         _se_after: "{{ _se_started_after.status.ActiveEnterTimestampMonotonic }}"
+
+- name: Turn db03 into a node without marker that holds data
+  hosts: db03
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Stop MariaDB on db03
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: stopped
+
+    - name: Remove the bootstrap marker on db03
+      ansible.builtin.file:
+        path: "{{ mariadb_galera_marker }}"
+        state: absent
+
+- name: SST overwrite guard
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy that would overwrite db03
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: []
+          expect: "db03 akan menerima SST (join tanpa marker"
+          expect_also: "berisi database: app"
+
+    - name: Run deploy that allows the overwrite
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: [-e, mariadb_galera_allow_sst_overwrite=true]
+          expect_success: true

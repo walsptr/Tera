@@ -35,6 +35,17 @@ Agregat dihitung **di setiap host** dari `ansible_play_hosts` (bukan `run_once` 
 - Jumlah node >= `mariadb_galera_min_nodes` (jumlah genap → warning, karena rawan split brain).
 - Tanpa `--limit` (`ansible_play_hosts_all` == `groups['mariadb']`).
 - Password SST dan clustercheck terisi.
+- Custom config tidak berisi `wsrep_sst_auth` (kredensial SST hanya di `98-tera-sst.cnf`).
+- **Tidak ada SST yang menimpa data user.** Node yang akan menerima SST tanpa marker tidak boleh punya
+  database user di datadir (`mariadb_datadir`):
+  - saat fresh bootstrap: semua node **kecuali** bootstrap host (datanya menjadi sumber cluster, sehingga
+    migrasi standalone → galera bisa dilakukan dengan menjadikan node lama bootstrap host);
+  - saat cluster alive: node yang tidak Primary dan tidak punya marker (node baru, scale out).
+
+  Deteksi di level filesystem (direktori di datadir selain `mysql`, `performance_schema`, `sys`), sehingga
+  tetap jalan walau MariaDB mati. Pesan error menyebut node dan database yang ditemukan, dan menyarankan
+  `mariadb_bootstrap_host` jika data ada di node non-bootstrap saat fresh bootstrap. Override eksplisit:
+  `mariadb_galera_allow_sst_overwrite: true` (default `false`).
 
 ## Tabel keputusan
 
