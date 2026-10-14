@@ -24,7 +24,7 @@ roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
 inventory/sample/{hosts.yml,group_vars/all/{tera.yml,passwords.yml},config/{mariadb,haproxy/conf.d,keepalived}}
 docs/
-molecule/{shared,standalone,standalone-podman,galera}/   # shared = playbook converge/verify/prepare bersama
+molecule/{shared,standalone,standalone-podman,galera,reconfigure,recover,recover-poweroff}/   # shared = playbook dan task bersama
 ```
 
 ## Inventory cluster

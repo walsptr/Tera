@@ -1,0 +1,37 @@
+---
+# Reconfigure verify: the global and per-host changes are active, the cluster is whole, and no
+# restart is pending.
+- name: Verify reconfigure
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Load MariaDB OS variables
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
+
+    - name: Read server state
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query:
+          - SELECT @@wait_timeout AS wait_timeout, @@interactive_timeout AS interactive_timeout
+          - SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_cluster_size', 'wsrep_local_state')
+      register: _verify_state
+
+    - name: Check restart pending marker
+      ansible.builtin.stat:
+        path: "{{ mariadb_restart_marker }}"
+      register: _verify_marker
+
+    - name: Check config is active and the cluster is whole
+      ansible.builtin.assert:
+        that:
+          - _verify_state.query_result[0][0]['wait_timeout'] | int == 654
+          - _verify_state.query_result[0][0]['interactive_timeout'] | int == (888 if inventory_hostname == 'db02' else 28800)
+          - _verify_status['wsrep_cluster_size'] == '3'
+          - _verify_status['wsrep_local_state'] == '4'
+          - not _verify_marker.stat.exists
+      vars:
+        _verify_status: "{{ _verify_state.query_result[1] | items2dict(key_name='Variable_name', value_name='Value') }}"

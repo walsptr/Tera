@@ -1,0 +1,172 @@
+---
+# Reconfigure (docs/GALERA-LIFECYCLE.md, "Reconfigure" and "Rolling restart"):
+# 1. a global change restarts every node one at a time, in inventory order, each Synced before the
+#    next; the cluster never drops below 2 Synced members (tera-monitor.sh + check_rolling.py);
+# 2. a per-host change restarts only that host;
+# 3. a run without changes restarts nothing and reports changed=0.
+- name: Add a global config change
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Write global custom config
+      ansible.builtin.copy:
+        content: |
+          # Molecule reconfigure: global change
+          [mysqld]
+          wait_timeout = 654
+        dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/zz-reconf.cnf"
+        mode: "0644"
+
+- name: Start monitors
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Copy monitor script
+      ansible.builtin.copy:
+        src: tera-monitor.sh
+        dest: /usr/local/sbin/tera-monitor.sh
+        mode: "0755"
+
+    - name: Start monitor
+      ansible.builtin.command:
+        cmd: systemd-run --unit=tera-monitor --collect /usr/local/sbin/tera-monitor.sh /var/log/tera-monitor.log
+      changed_when: true
+
+- name: Reconfigure with the global change
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+- name: Collect monitor logs
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop monitor
+      ansible.builtin.systemd_service:
+        name: tera-monitor
+        state: stopped
+
+    - name: Fetch monitor log
+      ansible.builtin.fetch:
+        src: /var/log/tera-monitor.log
+        dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/monitor/{{ inventory_hostname }}.log"
+        flat: true
+
+- name: Check the rolling restart
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_monitor_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/monitor"
+  tasks:
+    - name: Analyse monitor logs
+      ansible.builtin.command:
+        argv: >-
+          {{ [ansible_playbook_python, playbook_dir ~ '/files/check_rolling.py', groups['mariadb'] | join(',')]
+             + (groups['mariadb'] | map('regex_replace', '^(.*)$', '\1=' ~ _se_monitor_dir ~ '/\1.log') | list) }}
+      register: _se_rolling
+      changed_when: false
+      failed_when: false
+
+    - name: Assert one node at a time and cluster size never below 2
+      ansible.builtin.assert:
+        that:
+          - _se_rolling.rc == 0
+        fail_msg: "{{ _se_rolling.stdout_lines }}"
+        success_msg: "{{ _se_rolling.stdout_lines }}"
+
+- name: Record start times before the per-host change
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_1
+
+- name: Reconfigure with a per-host change
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Create per-host custom config directory for db02
+      ansible.builtin.file:
+        path: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/db02"
+        state: directory
+        mode: "0755"
+
+    - name: Write per-host custom config for db02
+      ansible.builtin.copy:
+        content: |
+          # Molecule reconfigure: per-host change
+          [mysqld]
+          interactive_timeout = 888
+        dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/db02/zz-reconf.cnf"
+        mode: "0644"
+
+    - name: Run reconfigure
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+- name: Check only db02 restarted
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_2
+
+    - name: Assert only db02 was restarted
+      ansible.builtin.assert:
+        that:
+          - (_se_started_2.status.ActiveEnterTimestampMonotonic != _se_started_1.status.ActiveEnterTimestampMonotonic)
+            == (inventory_hostname == 'db02')
+
+- name: Reconfigure without changes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+    - name: Assert nothing changed
+      ansible.builtin.assert:
+        that:
+          - _se_run.stdout is not search('changed=[1-9]')
+        fail_msg: "changed tasks: {{ _se_changed_tasks }}; {{ _se_run.stdout_lines | select('search', 'changed=') | list }}"
+
+- name: Check nothing restarted
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_3
+
+    - name: Assert no node was restarted
+      ansible.builtin.assert:
+        that:
+          - _se_started_3.status.ActiveEnterTimestampMonotonic == _se_started_2.status.ActiveEnterTimestampMonotonic

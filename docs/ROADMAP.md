@@ -42,13 +42,13 @@ CI `molecule-podman` belum pernah jalan karena repo belum di-push ke GitHub.
 - [x] `galera.yml` (bootstrap / join sesuai `docs/GALERA-LIFECYCLE.md`) + Molecule `galera` (Ubuntu 22.04, Ubuntu 24.04, Rocky 9)
 - [x] Template `[galera]`, paket galera/mariabackup/socat, user SST, `98-tera-sst.cnf`
 - [x] `wait_synced.yml`
-- [ ] Cabang galera di `restart.yml` (rolling restart + `wait_synced`; diverifikasi di Molecule `reconfigure`)
+- [x] Cabang galera di `restart.yml` (rolling restart + `wait_synced`; diverifikasi di Molecule `reconfigure`)
 - [x] Prechecks galera
 - [x] Firewall: firewalld untuk port Galera (ADR 0010)
 - [x] SELinux (port Galera, `mysqld_t` permissive opsional)
 - [x] `tera recover`
 - [x] Clustercheck
-- [ ] Molecule `galera`, `reconfigure`, `recover`
+- [x] Molecule `galera`, `reconfigure`, `recover` (Ubuntu 22.04/24.04 dan Rocky 9 untuk `galera`; Ubuntu 24.04 dan Rocky 9 untuk `reconfigure` dan `recover`)
 
 ## Fase 3 — Load balancer
 
