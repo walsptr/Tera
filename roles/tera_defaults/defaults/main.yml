@@ -17,6 +17,8 @@ tera_state_dir: /etc/tera
 # Restart pending marker (ADR 0009): written before 99-tera.cnf changes, removed after a
 # successful restart or a fresh start with the current config.
 mariadb_restart_marker: "{{ tera_state_dir }}/mariadb-restart-pending"
+# Galera bootstrap marker (ADR 0006): written after Tera bootstrapped/joined the cluster.
+mariadb_galera_marker: "{{ tera_state_dir }}/mariadb-galera.bootstrapped"
 
 # --- Network ----------------------------------------------------------------
 # Interface used to derive tera_listen_address when host var `ip` is not set.

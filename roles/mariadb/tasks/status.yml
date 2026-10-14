@@ -1,2 +1,48 @@
 ---
-[]
+# Read-only Galera state (docs/GALERA-LIFECYCLE.md, "Status"). Queries use check_mode: false
+# so --check sees the real state. Aggregates are computed on every host from ansible_play_hosts.
+- name: Collect service facts
+  ansible.builtin.service_facts:
+
+- name: Set MariaDB running state
+  ansible.builtin.set_fact:
+    _mariadb_running: >-
+      {{ (ansible_facts['services'][_mariadb_service ~ '.service']['state'] | default('')
+          == 'running') | bool }}
+
+- name: Query wsrep cluster status
+  ansible.builtin.command:
+    cmd: mariadb -N -B -e "SHOW GLOBAL STATUS LIKE 'wsrep_cluster_status'"
+  register: _mariadb_wsrep_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: _mariadb_running | bool
+
+- name: Check Galera bootstrap marker
+  ansible.builtin.stat:
+    path: "{{ mariadb_galera_marker }}"
+  register: _mariadb_marker_stat
+  check_mode: false
+
+- name: Set node status
+  ansible.builtin.set_fact:
+    _mariadb_wsrep_primary: >-
+      {{ ((_mariadb_running | bool)
+          and (_mariadb_wsrep_status.rc | default(1) == 0)
+          and ((_mariadb_wsrep_status.stdout | default('')).split() | last | default('') == 'Primary')) | bool }}
+    _mariadb_bootstrapped_marker: "{{ _mariadb_marker_stat.stat.exists | bool }}"
+
+- name: Set cluster status
+  ansible.builtin.set_fact:
+    _galera_cluster_alive: >-
+      {{ (ansible_play_hosts | map('extract', hostvars, '_mariadb_wsrep_primary') | select | list | length > 0) | bool }}
+    _galera_ever_bootstrapped: >-
+      {{ (ansible_play_hosts | map('extract', hostvars, '_mariadb_bootstrapped_marker') | select | list | length > 0) | bool }}
+
+- name: Show Galera node status
+  ansible.builtin.debug:
+    msg: >-
+      running={{ _mariadb_running }} primary={{ _mariadb_wsrep_primary }}
+      marker={{ _mariadb_bootstrapped_marker }} | cluster alive={{ _galera_cluster_alive }}
+      ever bootstrapped={{ _galera_ever_bootstrapped }}

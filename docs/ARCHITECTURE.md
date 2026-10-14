@@ -116,6 +116,7 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `tera_config_dir` | `{{ inventory_dir }}/config` |
 | `tera_state_dir` | `/etc/tera` |
 | `mariadb_restart_marker` | `{{ tera_state_dir }}/mariadb-restart-pending` |
+| `mariadb_galera_marker` | `{{ tera_state_dir }}/mariadb-galera.bootstrapped` |
 | `tera_network_interface` | `""` |
 | `mariadb_cluster_mode` | `standalone` |
 | `mariadb_version` | `"11.4"` |
