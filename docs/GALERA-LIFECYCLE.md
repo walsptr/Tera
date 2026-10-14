@@ -142,7 +142,7 @@ menghilangkan transaksi yang lebih baru.
 
 ### Pemulihan otomatis di produksi
 
-Unit systemd MariaDB upstream memakai `Restart=on-abnormal` (MariaDB 11.4; kill -9 dan crash termasuk), dan Galera menyimpan komponen Primary terakhir di
+Unit systemd MariaDB upstream memakai `Restart=on-abnormal` (MariaDB 11.4, unit upstream; dicek di Ubuntu 24.04 dan Rocky 9; kill -9 dan crash termasuk), dan Galera menyimpan komponen Primary terakhir di
 `gvwstate.dat` (`pc.recovery`, aktif secara default). Setelah crash atau mati listrik, node bisa menyala
 lagi sendiri (service di-enable) dan, jika semua anggota komponen Primary terakhir kembali, membentuk
 Primary tanpa campur tangan. Dalam kondisi itu `tera deploy` melihat cluster **alive** dan hanya me-join
