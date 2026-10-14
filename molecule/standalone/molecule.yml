@@ -1,6 +1,8 @@
 ---
 # Standalone scenario (docs/TESTING.md). One VM per run; the OS matrix and the pinned boxes
 # (TERA_BOX, TERA_BOX_VERSION, TERA_BOX_URL, TERA_BOX_CHECKSUM*) are listed in docs/TESTING.md.
+# Default matrix: Ubuntu 22.04, Ubuntu 24.04, Rocky 9. Optional platform (not run by default):
+# AlmaLinux 9 (TERA_BOX=almalinux/9 TERA_BOX_VERSION=9.8.20260907).
 # Collections are installed once into ./collections (see AGENTS.md); no per-run download.
 dependency:
   name: galaxy

@@ -27,7 +27,7 @@ Aturan:
 - [x] Play rolling restart + `restart.yml`
 - [ ] Molecule `standalone` (belum diverifikasi: box libvirt sudah diunduh dan dipin, `molecule syntax` lulus; `vagrant` HashiCorp belum bisa memuat plugin `vagrant-libvirt`)
 
-- [x] Molecule `standalone-podman` (pelengkap cepat, juga di CI — job CI belum diverifikasi di GitHub)
+- [x] Molecule `standalone-podman` (pelengkap cepat: Ubuntu 22.04/24.04, Rocky 9, AlmaLinux 9; job CI belum diverifikasi di GitHub)
 
 Kriteria fase: deploy berhasil di semua OS target, run kedua `changed=0`, reconfigure menerapkan config global dan per host.
 

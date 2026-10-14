@@ -1,7 +1,8 @@
 ---
 # Fast complement to the VM scenarios: systemd containers via rootless podman.
 # NOT a replacement for VMs (see docs/TESTING.md). One container per run; OS via TERA_PODMAN_IMAGE:
-#   for image in docker.io/library/ubuntu:22.04 docker.io/library/ubuntu:24.04 docker.io/rockylinux/rockylinux:9; do
+#   for image in docker.io/library/ubuntu:22.04 docker.io/library/ubuntu:24.04 \
+#                docker.io/rockylinux/rockylinux:9 docker.io/library/almalinux:9; do
 #     TERA_PODMAN_IMAGE=$image molecule test -s standalone-podman
 #   done
 dependency:

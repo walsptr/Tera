@@ -67,6 +67,7 @@ jobs:
           - docker.io/library/ubuntu:22.04
           - docker.io/library/ubuntu:24.04
           - docker.io/rockylinux/rockylinux:9
+          - docker.io/library/almalinux:9
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
