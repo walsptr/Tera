@@ -145,6 +145,7 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_databases` / `mariadb_users` | `[]` |
 | `mariadb_sst_user` | `tera_sst` (`@localhost`; password dari `mariadb_sst_password`) |
 | `mariadb_firewall_manage` | `true` (mode galera, hanya jika firewalld berjalan; ADR 0010) |
+| `mariadb_selinux_permissive` | `false` (`true` = domain `mysqld_t` permissive; tidak disarankan) |
 
 
 ## Topologi HA
@@ -178,6 +179,13 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | 8404/tcp | HAProxy stats |
 | protokol 112 | VRRP |
 
+SELinux (RHEL, mode galera, SELinux enabled): Tera memasang label `mysqld_port_t` untuk 4568/tcp (IST, tidak
+berlabel) dan 4444/tcp (SST, default `kerberos_port_t`), dan memuat modul policy minimal `tera_galera`
+(`roles/mariadb/files/tera_galera.te`, salinan di `/etc/tera/selinux/`). Setiap aturan di modul menyebut denial
+yang diperbaikinya; semuanya terbatas pada domain `mysqld_t` sendiri (`setpgid` untuk `timeout` di script SST,
+`connectto` socket server oleh mariabackup di donor, `sendto` datagram oleh socat di joiner). 4567/tcp sudah
+`tram_port_t` dan boleh di-bind `mysqld_t`.
+
 Firewall (ADR 0010): di mode galera, jika firewalld berjalan, Tera membuka 4567/tcp, 4567/udp, 4568/tcp, dan
 4444/tcp **hanya dari alamat node cluster** (rich rule), serta `mariadb_port` dan `mariadb_clustercheck_port`
 di zona default. Tera tidak menyalakan firewalld dan tidak mengelola ufw (prechecks memberi peringatan jika
@@ -192,6 +200,7 @@ ufw aktif). Matikan dengan `mariadb_firewall_manage: false` jika firewall dikelo
 | State Tera | `/etc/tera/` (`0750 root:mysql`) |
 | Marker bootstrap | `/etc/tera/mariadb-galera.bootstrapped` |
 | Restart pending marker | `/etc/tera/mariadb-restart-pending` (`0640 root:mysql`, ADR 0009) |
+| Modul SELinux (RHEL, galera) | `/etc/tera/selinux/tera_galera.{te,mod,pp}`, dimuat dengan `semodule` |
 | Kredensial clustercheck | `/etc/tera/clustercheck.cnf` (`0640 root:mysql`) |
 | Script clustercheck | `/usr/local/bin/tera-clustercheck` |
 | Unit systemd | `tera-clustercheck.socket`, `tera-clustercheck@.service` |

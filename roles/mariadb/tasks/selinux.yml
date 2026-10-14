@@ -1,2 +1,60 @@
 ---
-[]
+# SELinux for galera mode on RHEL (enforcing or permissive). Precise labels and rules for the
+# denials Galera hits; mysqld_t permissive only when mariadb_selinux_permissive is set.
+- name: Install SELinux tools
+  ansible.builtin.package:
+    name: "{{ _mariadb_selinux_packages }}"
+    state: present
+
+# 4567/tcp is already tram_port_t, which mysqld_t may bind. 4568 (IST) is unlabeled and 4444 (SST)
+# is kerberos_port_t (krb524): label only these two ports for mysqld.
+- name: Label Galera IST and SST ports for mysqld
+  community.general.seport:
+    ports: "{{ item }}"
+    proto: tcp
+    setype: mysqld_port_t
+    state: present
+  loop:
+    - "4568"
+    - "4444"
+
+- name: Create Tera SELinux directory
+  ansible.builtin.file:
+    path: "{{ tera_state_dir }}/selinux"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Copy tera_galera policy source
+  ansible.builtin.copy:
+    src: tera_galera.te
+    dest: "{{ tera_state_dir }}/selinux/tera_galera.te"
+    owner: root
+    group: root
+    mode: "0640"
+  register: _mariadb_selinux_te
+
+- name: List loaded SELinux modules
+  ansible.builtin.command:
+    cmd: semodule -l
+  register: _mariadb_semodules
+  changed_when: false
+  check_mode: false
+
+- name: Build and load tera_galera policy module
+  ansible.builtin.shell:
+    cmd: >-
+      set -euo pipefail;
+      checkmodule -M -m -o tera_galera.mod tera_galera.te &&
+      semodule_package -o tera_galera.pp -m tera_galera.mod &&
+      semodule -i tera_galera.pp
+    chdir: "{{ tera_state_dir }}/selinux"
+    executable: /bin/bash
+  changed_when: true
+  when: (_mariadb_selinux_te is changed) or ('tera_galera' not in _mariadb_semodules.stdout_lines)
+
+- name: Set mysqld_t permissive when requested
+  community.general.selinux_permissive:
+    name: mysqld_t
+    permissive: "{{ mariadb_selinux_permissive | bool }}"

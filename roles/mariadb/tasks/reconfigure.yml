@@ -11,6 +11,13 @@
     - mariadb_cluster_mode == 'galera'
     - mariadb_firewall_manage | bool
 
+- name: Configure SELinux for Galera
+  ansible.builtin.include_tasks: selinux.yml
+  when:
+    - mariadb_cluster_mode == 'galera'
+    - ansible_facts['os_family'] == 'RedHat'
+    - (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+
 - name: Configure MariaDB
   ansible.builtin.import_tasks: config.yml
 

@@ -104,6 +104,22 @@
              | list }}
       when: _verify_fw is not skipped
 
+    # ausearch exits 1 when nothing matches: that is the expected result.
+    - name: Search SELinux denials for mysqld since boot
+      ansible.builtin.command:
+        cmd: ausearch --message AVC --start boot --subject mysqld_t
+      register: _verify_avc
+      changed_when: false
+      failed_when: _verify_avc.rc not in [0, 1]
+      when: (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+
+    - name: Check there are no SELinux denials for mysqld
+      ansible.builtin.assert:
+        that:
+          - _verify_avc.rc == 1
+        fail_msg: "SELinux denial untuk mysqld_t: {{ _verify_avc.stdout_lines | select('search', 'avc:') | list }}"
+      when: _verify_avc is not skipped
+
     - name: Query server as admin over TCP
       ansible.mysql.mysql_query:
         login_host: "{{ _verify_address }}"

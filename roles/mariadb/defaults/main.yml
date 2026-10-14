@@ -17,6 +17,9 @@ mariadb_packages_extra: []
 mariadb_sst_user: tera_sst
 # Open the Galera ports in firewalld when it runs (ADR 0010). ufw is never managed.
 mariadb_firewall_manage: true
+# Make the SELinux domain mysqld_t permissive (RHEL). Off by default: Tera labels the Galera ports
+# and loads a minimal tera_galera policy module instead.
+mariadb_selinux_permissive: false
 
 # --- Users ------------------------------------------------------------------
 # root@localhost stays unix_socket only (ADR 0008). Remote admin access uses this user,

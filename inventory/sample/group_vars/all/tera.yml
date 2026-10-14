@@ -34,3 +34,4 @@ mariadb_cluster_mode: standalone # standalone | galera
 # keepalived_virtual_router_id: 51                                # must be unique per L2 network
 # mariadb_lb_mode: single_writer                                  # single_writer | multi_writer
 # mariadb_firewall_manage: true   # open Galera ports in firewalld when it runs (ADR 0010); ufw is not managed
+# mariadb_selinux_permissive: false   # RHEL: Tera labels ports and loads a minimal policy instead

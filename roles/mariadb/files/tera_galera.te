@@ -1,0 +1,23 @@
+# Managed by Tera - JANGAN edit manual
+# Minimal SELinux rules for Galera on top of the RHEL targeted policy. Each rule names the denial
+# it fixes; ports are labeled with semanage (roles/mariadb/tasks/selinux.yml), not here.
+module tera_galera 1.1;
+
+require {
+	type mysqld_t;
+	class process setpgid;
+	class unix_stream_socket connectto;
+	class unix_dgram_socket sendto;
+}
+
+# wsrep_sst_mariabackup runs `timeout`, which calls setpgid:
+# avc: denied { setpgid } comm="timeout" scontext=mysqld_t tcontext=mysqld_t tclass=process
+allow mysqld_t self:process setpgid;
+
+# On the donor, mariabackup (running as mysqld_t) connects to the server socket:
+# avc: denied { connectto } comm="mariadb-backup" path="/var/lib/mysql/mysql.sock" tclass=unix_stream_socket
+allow mysqld_t self:unix_stream_socket connectto;
+
+# On the joiner, socat (SST receiver, mysqld_t) sends on its own datagram socket:
+# avc: denied { sendto } comm="socat" scontext=mysqld_t tcontext=mysqld_t tclass=unix_dgram_socket
+allow mysqld_t self:unix_dgram_socket sendto;
