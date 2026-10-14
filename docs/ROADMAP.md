@@ -38,13 +38,13 @@ CI `molecule-podman` belum pernah jalan karena repo belum di-push ke GitHub.
 
 ## Fase 2 — Galera
 
-- [ ] `status.yml` (belum diverifikasi: dicentang bersama `galera.yml`)
-- [ ] `galera.yml` (bootstrap / join sesuai `docs/GALERA-LIFECYCLE.md`) + Molecule `galera` (belum diverifikasi: lulus di Ubuntu 22.04/24.04; Rocky 9 menunggu item firewall)
-- [ ] Template `[galera]`, paket galera/mariabackup/socat, user SST, `98-tera-sst.cnf` (belum diverifikasi: dicentang bersama `galera.yml`)
-- [ ] `wait_synced.yml` (belum diverifikasi: dicentang bersama `galera.yml`)
+- [x] `status.yml`
+- [x] `galera.yml` (bootstrap / join sesuai `docs/GALERA-LIFECYCLE.md`) + Molecule `galera` (Ubuntu 22.04, Ubuntu 24.04, Rocky 9)
+- [x] Template `[galera]`, paket galera/mariabackup/socat, user SST, `98-tera-sst.cnf`
+- [x] `wait_synced.yml`
 - [ ] Cabang galera di `restart.yml` (rolling restart + `wait_synced`; diverifikasi di Molecule `reconfigure`)
 - [ ] Prechecks galera
-- [ ] Firewall: firewalld untuk port Galera (ADR 0010) (belum diverifikasi: di Rocky 9 joiner sudah mencapai donor; skenario penuh menunggu SELinux)
+- [x] Firewall: firewalld untuk port Galera (ADR 0010)
 - [ ] SELinux (port Galera, `mysqld_t` permissive opsional) (belum diverifikasi: Rocky 9 enforcing lulus tanpa denial secara manual; assert AVC di verify menunggu run berikutnya)
 - [ ] `tera recover`
 - [ ] Clustercheck
