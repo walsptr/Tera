@@ -7,8 +7,13 @@ set -u
 
 available_when_donor={{ 1 if mariadb_clustercheck_available_when_donor | bool else 0 }}
 
-# Consume the request line so the client does not see a reset; never block for long.
-read -r -t 1 _request || true
+# Read the whole request (request line and headers, up to the empty line) before answering: closing
+# the socket with unread data makes the kernel send a reset, and HAProxy then marks the server DOWN
+# ("Connection reset by peer"). Never block for long.
+while IFS= read -r -t 1 line; do
+  line=${line%$'\r'}
+  [ -z "$line" ] && break
+done
 
 state=$(mariadb --defaults-extra-file={{ tera_state_dir }}/clustercheck.cnf -N -B \
   -e "SHOW GLOBAL STATUS LIKE 'wsrep_local_state'" 2>/dev/null | awk '{print $2}')
