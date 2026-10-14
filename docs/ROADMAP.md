@@ -44,6 +44,7 @@ CI `molecule-podman` belum pernah jalan karena repo belum di-push ke GitHub.
 - [ ] `wait_synced.yml` (belum diverifikasi: dicentang bersama `galera.yml`)
 - [ ] Cabang galera di `restart.yml` (rolling restart + `wait_synced`; diverifikasi di Molecule `reconfigure`)
 - [ ] Prechecks galera
+- [ ] Firewall: firewalld untuk port Galera (ADR 0010)
 - [ ] SELinux (port Galera, `mysqld_t` permissive opsional)
 - [ ] `tera recover`
 - [ ] Clustercheck
