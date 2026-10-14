@@ -11,6 +11,11 @@ mariadb_repo_rpm_key_url: https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB
 
 mariadb_packages_extra: []
 
+# --- Galera -----------------------------------------------------------------
+# SST user (mariabackup), password from mariadb_sst_password (passwords.yml). The credentials
+# are written to 98-tera-sst.cnf, never to 99-tera.cnf.
+mariadb_sst_user: tera_sst
+
 # --- Users ------------------------------------------------------------------
 # root@localhost stays unix_socket only (ADR 0008). Remote admin access uses this user,
 # password from mariadb_admin_password (passwords.yml).

@@ -1,5 +1,6 @@
 ---
 # Merge order (later wins): role template -> config/mariadb/*.cnf -> config/mariadb/<host>/*.cnf.
+# Galera SST credentials go to a separate 98-tera-sst.cnf (no_log, no diff); 99-tera.cnf holds no secrets.
 # Spec: docs/CUSTOM-CONFIG.md. Never restarts MariaDB; only sets mariadb_restart_required and the
 # restart pending marker (ADR 0009).
 
@@ -33,6 +34,28 @@
     _mariadb_cnf: "{{ lookup('ansible.builtin.template', 'tera.cnf.j2') | merge_ini(_mariadb_custom_sources) }}"
   no_log: true
 
+# Secrets never go to 99-tera.cnf (shown by --diff). A wsrep_sst_auth from custom config would also
+# silently override 98-tera-sst.cnf, because 99 is read later.
+- name: Check merged config contains no SST credentials
+  ansible.builtin.assert:
+    that:
+      - _mariadb_cnf is not search('^wsrep_sst_auth( |$)', multiline=True)
+    fail_msg: >-
+      Custom config di {{ tera_config_dir | basename }}/mariadb/ berisi wsrep_sst_auth. Hapus key itu:
+      kredensial SST dikelola Tera di 98-tera-sst.cnf dari mariadb_sst_user dan mariadb_sst_password.
+    quiet: true
+
+- name: Build SST credentials config
+  ansible.builtin.set_fact:
+    _mariadb_sst_cnf: |
+      # Managed by Tera - JANGAN edit manual
+      # Kredensial SST (secret). Ubah lewat mariadb_sst_user / mariadb_sst_password.
+
+      [galera]
+      wsrep_sst_auth = {{ mariadb_sst_user }}:{{ mariadb_sst_password }}
+  when: mariadb_cluster_mode == 'galera'
+  no_log: true
+
 - name: Check whether 99-tera.cnf would change
   ansible.builtin.copy:
     content: "{{ _mariadb_cnf }}"
@@ -44,6 +67,19 @@
   diff: false
   register: _mariadb_cnf_check
 
+- name: Check whether 98-tera-sst.cnf would change
+  ansible.builtin.copy:
+    content: "{{ _mariadb_sst_cnf }}"
+    dest: "{{ _mariadb_config_dir }}/98-tera-sst.cnf"
+    owner: root
+    group: mysql
+    mode: "0640"
+  check_mode: true
+  diff: false
+  register: _mariadb_sst_cnf_check
+  when: mariadb_cluster_mode == 'galera'
+  no_log: true
+
 # Written BEFORE the config so an interrupted run still restarts next time (ADR 0009).
 # Not a handler: it must run before the next task. Not written in --check (task runs in check mode).
 - name: Write restart pending marker # noqa: no-handler
@@ -53,7 +89,7 @@
     owner: root
     group: mysql
     mode: "0640"
-  when: _mariadb_cnf_check is changed
+  when: (_mariadb_cnf_check is changed) or (_mariadb_sst_cnf_check is changed)
 
 - name: Write 99-tera.cnf
   ansible.builtin.copy:
@@ -63,6 +99,18 @@
     group: mysql
     mode: "0640"
   register: _mariadb_cnf_result
+
+- name: Write 98-tera-sst.cnf
+  ansible.builtin.copy:
+    content: "{{ _mariadb_sst_cnf }}"
+    dest: "{{ _mariadb_config_dir }}/98-tera-sst.cnf"
+    owner: root
+    group: mysql
+    mode: "0640"
+  diff: false
+  register: _mariadb_sst_cnf_result
+  when: mariadb_cluster_mode == 'galera'
+  no_log: true
 
 - name: Check restart pending marker
   ansible.builtin.stat:
@@ -75,4 +123,5 @@
     mariadb_restart_required: >-
       {{ (mariadb_restart_required | default(false) | bool)
          or (_mariadb_cnf_result is changed)
+         or (_mariadb_sst_cnf_result is changed)
          or _mariadb_restart_marker_stat.stat.exists }}

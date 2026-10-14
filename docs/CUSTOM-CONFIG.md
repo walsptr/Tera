@@ -28,9 +28,24 @@ dari dokumen ini, dokumen ini yang benar.
 
 Hasil merge ditulis ke satu file drop-in `99-tera.cnf`.
 
-Isi template role saat ini (mode standalone): `[mysqld]` dengan `bind_address = {{ tera_listen_address }}`,
-`port = {{ mariadb_port }}`, dan `skip_name_resolve`. Semuanya bisa di-override atau dihapus (`__remove__`)
-lewat custom config. File berubah → `mariadb_restart_required: true`; `config.yml` sendiri tidak pernah me-restart.
+Isi template role saat ini: `[mysqld]` dengan `bind_address = {{ tera_listen_address }}`,
+`port = {{ mariadb_port }}`, dan `skip_name_resolve`. Di mode galera ditambah section `[galera]`:
+`wsrep_on`, `wsrep_provider` (path per OS), `wsrep_cluster_name`, `wsrep_cluster_address` (semua node group
+`mariadb` dengan urutan inventory), `wsrep_node_address`, `wsrep_node_name`, `wsrep_sst_method = mariabackup`,
+`binlog_format = ROW`, `default_storage_engine = InnoDB`, `innodb_autoinc_lock_mode = 2`. Semuanya bisa
+di-override atau dihapus (`__remove__`) lewat custom config. File berubah → `mariadb_restart_required: true`;
+`config.yml` sendiri tidak pernah me-restart.
+
+## Secret
+
+`99-tera.cnf` **tidak pernah** berisi secret, sehingga aman ditampilkan oleh `--diff`.
+
+- Kredensial SST (`wsrep_sst_auth`) ditulis Tera ke file terpisah `98-tera-sst.cnf` (`0640 root:mysql`,
+  `no_log`, tanpa diff) dari `mariadb_sst_user` dan `mariadb_sst_password`. Perubahan file ini juga memicu
+  restart pending marker (ADR 0009).
+- Key `wsrep_sst_auth` di custom config **ditolak** (prechecks dan `config.yml`). Selain berisi secret, key
+  itu di `99-tera.cnf` akan menimpa `98-tera-sst.cnf` secara diam-diam karena dibaca belakangan.
+- Jangan menaruh password lain di custom config; pakai variabel di `passwords.yml`.
 
 ## Jinja2
 
@@ -343,8 +358,8 @@ wsrep_on = ON
 - Jika `99-tera.cnf` berubah, restart pending marker ditulis lebih dulu, node ditandai
   `mariadb_restart_required: true`, dan di-restart oleh play rolling restart. Jika run terputus sebelum
   restart, marker membuat run berikutnya tetap me-restart (ADR 0009).
-- `tera reconfigure --check --diff` menampilkan diff tanpa mengubah apa pun.
-  **Peringatan:** diff bisa menampilkan `wsrep_sst_auth` (password SST).
+- `tera reconfigure --check --diff` menampilkan diff tanpa mengubah apa pun. Diff hanya mencakup
+  `99-tera.cnf`, yang tidak berisi secret (lihat [Secret](#secret)).
 - Perubahan di `config/mariadb/<host>/` hanya me-restart host tersebut.
 
 ## HAProxy dan Keepalived

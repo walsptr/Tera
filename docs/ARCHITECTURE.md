@@ -142,6 +142,7 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_admin_user` | `tera_admin` |
 | `mariadb_admin_hosts` | `["localhost"]` (list host/subnet, mis. `"10.10.10.%"`; `"%"` memicu warning prechecks; host yang dihapus dari list tidak di-drop otomatis) |
 | `mariadb_databases` / `mariadb_users` | `[]` |
+| `mariadb_sst_user` | `tera_sst` (`@localhost`; password dari `mariadb_sst_password`) |
 
 Selama Fase 1, prechecks menolak `mariadb_cluster_mode: galera` (belum diimplementasikan).
 
@@ -181,6 +182,7 @@ Selama Fase 1, prechecks menolak `mariadb_cluster_mode: galera` (belum diimpleme
 | Artefak | Lokasi / mode |
 |---|---|
 | Config MariaDB | `99-tera.cnf` di `/etc/mysql/mariadb.conf.d/` (Debian) atau `/etc/my.cnf.d/` (RHEL), `0640 root:mysql` |
+| Kredensial SST (galera) | `98-tera-sst.cnf` di direktori yang sama, `0640 root:mysql`; satu-satunya file config yang berisi secret, ditulis dengan `no_log` tanpa diff |
 | State Tera | `/etc/tera/` (`0750 root:mysql`) |
 | Marker bootstrap | `/etc/tera/mariadb-galera.bootstrapped` |
 | Restart pending marker | `/etc/tera/mariadb-restart-pending` (`0640 root:mysql`, ADR 0009) |

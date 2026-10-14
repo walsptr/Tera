@@ -31,6 +31,17 @@
       loop: "{{ mariadb_admin_hosts }}"
       no_log: true
 
+    # Used by the donor (mariabackup) during SST; must exist before any joiner starts.
+    - name: Create SST user
+      ansible.mysql.mysql_user:
+        name: "{{ mariadb_sst_user }}"
+        host: localhost
+        password: "{{ mariadb_sst_password }}"
+        priv: "*.*:RELOAD,PROCESS,LOCK TABLES,BINLOG MONITOR"
+        state: present
+      when: mariadb_cluster_mode == 'galera'
+      no_log: true
+
     - name: Manage databases
       ansible.mysql.mysql_db:
         name: "{{ item.name }}"

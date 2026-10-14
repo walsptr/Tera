@@ -34,5 +34,5 @@
 
 - name: Install MariaDB packages
   ansible.builtin.package:
-    name: "{{ _mariadb_packages + mariadb_packages_extra }}"
+    name: "{{ _mariadb_packages + (_mariadb_galera_packages if mariadb_cluster_mode == 'galera' else []) + mariadb_packages_extra }}"
     state: present

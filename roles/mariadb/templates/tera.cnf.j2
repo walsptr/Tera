@@ -1,6 +1,21 @@
 {# Base options for 99-tera.cnf. The "Managed by Tera" header is added by merge_ini.
-   User overrides: inventory/<cluster>/config/mariadb/ (docs/CUSTOM-CONFIG.md). #}
+   User overrides: inventory/<cluster>/config/mariadb/ (docs/CUSTOM-CONFIG.md).
+   Never put secrets here: SST credentials live in 98-tera-sst.cnf. #}
 [mysqld]
 bind_address = {{ tera_listen_address }}
 port = {{ mariadb_port }}
 skip_name_resolve
+{% if mariadb_cluster_mode == 'galera' %}
+
+[galera]
+wsrep_on = ON
+wsrep_provider = {{ _mariadb_galera_provider }}
+wsrep_cluster_name = {{ mariadb_galera_cluster_name }}
+wsrep_cluster_address = gcomm://{{ groups['mariadb'] | map('extract', hostvars, 'tera_listen_address') | join(',') }}
+wsrep_node_address = {{ tera_listen_address }}
+wsrep_node_name = {{ inventory_hostname }}
+wsrep_sst_method = mariabackup
+binlog_format = ROW
+default_storage_engine = InnoDB
+innodb_autoinc_lock_mode = 2
+{% endif %}
