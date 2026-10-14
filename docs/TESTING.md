@@ -30,6 +30,24 @@ lint, syntax-check, dan pytest.
 - `vagrant` harus bisa memuat plugin `vagrant-libvirt` (`vagrant plugin list` harus menampilkannya).
   Vagrant dari HashiCorp memakai Ruby sendiri dan tidak melihat paket distro seperti `vagrant-libvirt`
   dari Fedora; pasang plugin lewat `vagrant plugin install vagrant-libvirt` atau pakai paket `vagrant` distro.
+- Host Fedora (terverifikasi di Fedora 44: `vagrant` 2.3.4 + `vagrant-libvirt` 0.11.2 dari repo Fedora):
+  - Jika repo HashiCorp terpasang, exclude paket vagrant agar tidak tertimpa saat update:
+    `sudo dnf config-manager setopt hashicorp.excludepkgs='vagrant*'`. Cek: `dnf repoquery vagrant`
+    hanya menampilkan repo `fedora`/`updates`, dan `vagrant plugin list` menampilkan `(system)`.
+  - Paket `vagrant-libvirt` Fedora memakai `qemu:///session` secara default; VM tidak mendapat IP yang
+    bisa dibaca Vagrant. Skenario Molecule memaksa `qemu:///system` lewat
+    `provider_options: {qemu_use_session: false}`. User harus bisa menjalankan
+    `virsh -c qemu:///system list` tanpa sudo (grup `libvirt`).
+  - Firewall host harus mengizinkan DHCP/DNS dari bridge libvirt. firewalld (default Fedora) sudah
+    menangani ini lewat zona `libvirt`. `iptables-services` dengan ruleset bawaan (`REJECT` di akhir
+    chain INPUT) memblokir DHCP: VM boot tetapi tidak pernah mendapat IP dan `vagrant up` timeout.
+  - vagrant-libvirt 0.11 memakai `virtual_size` dari `metadata.json` box sebagai ukuran disk VM. Box
+    Rocky 9.8 menulis `5` padahal image-nya 10 GiB, sehingga disk terpotong dan guest jatuh ke dracut
+    emergency mode (tidak pernah mendapat IP). Skenario memaksa `machine_virtual_size: 10`; box dengan
+    image lebih besar tetap memakai ukurannya sendiri.
+  - Vagrant 2.4 menyimpan box di `~/.vagrant.d/boxes/<nama>/<versi>/<arch>/libvirt`, Vagrant 2.3 di
+    `.../<versi>/libvirt`. Setelah pindah versi, `vagrant box list` bisa kosong; pindahkan folder
+    `libvirt` ke level yang sesuai atau tambahkan ulang box-nya.
 - Skenario single-node (`standalone`) menjalankan satu VM per run; OS dipilih lewat variabel `TERA_BOX*`.
 
 #### Box Vagrant (libvirt, dipin)

@@ -14,12 +14,21 @@ driver:
 platforms:
   - name: db01
     box: ${TERA_BOX:-cloud-image/ubuntu-22.04}
-    box_version: ${TERA_BOX_VERSION:-20260926.0.0}
+    # "-" (not ":-"): an empty TERA_BOX_VERSION (box_url boxes, e.g. Rocky) must stay empty.
+    box_version: ${TERA_BOX_VERSION-20260926.0.0}
     box_url: ${TERA_BOX_URL}
     box_download_checksum: ${TERA_BOX_CHECKSUM}
     box_download_checksum_type: ${TERA_BOX_CHECKSUM_TYPE}
     memory: 2048
     cpus: 2
+    # Fedora's vagrant-libvirt package defaults to qemu:///session (no management network,
+    # no DHCP lease for Vagrant to find). Always use the system libvirt.
+    # The Rocky box metadata says virtual_size 5 (GB) but its image is 10 GiB; vagrant-libvirt
+    # 0.11 trusts the metadata, truncates the disk and the guest drops to dracut emergency mode.
+    # 10 matches the Ubuntu boxes; boxes with a larger image keep their own size.
+    provider_options:
+      qemu_use_session: false
+      machine_virtual_size: 10
     groups:
       - mariadb
 provisioner:
