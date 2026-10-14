@@ -1,6 +1,6 @@
 # 0010. Tera mengelola firewalld untuk port Galera
 
-- **Status:** Accepted
+- **Status:** Superseded by 0011
 - **Tanggal:** 2026-10-14
 
 ## Konteks
