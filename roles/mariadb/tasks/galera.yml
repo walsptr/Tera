@@ -1,2 +1,95 @@
 ---
-[]
+# Bootstrap or join (docs/GALERA-LIFECYCLE.md, "Tabel keputusan"). Runs after config.yml wrote the
+# config and before the rolling restart play. Never bootstraps a cluster that was bootstrapped
+# before (ADR 0006): that is `tera recover`.
+- name: Read Galera status
+  ansible.builtin.include_tasks: status.yml
+
+- name: Refuse to bootstrap a cluster that was bootstrapped before
+  ansible.builtin.fail:
+    msg: >-
+      Tidak ada node Galera yang Primary, tetapi marker {{ mariadb_galera_marker }} ada di
+      {{ ansible_play_hosts | map('extract', hostvars) | selectattr('_mariadb_bootstrapped_marker') | map(attribute='inventory_hostname') | join(', ') }}.
+      Cluster ini pernah di-bootstrap; Tera tidak mem-bootstrap ulang secara otomatis karena node yang salah
+      bisa menghilangkan data (ADR 0006). Jalankan ./tera recover -i inventory/<cluster>
+      (lihat docs/GALERA-LIFECYCLE.md, bagian Recover).
+  when:
+    - not _galera_cluster_alive
+    - _galera_ever_bootstrapped
+
+- name: Bootstrap a new Galera cluster
+  when:
+    - not _galera_cluster_alive
+    - not _galera_ever_bootstrapped
+  block:
+    - name: Stop MariaDB on all nodes before bootstrap
+      ansible.builtin.systemd_service:
+        name: "{{ _mariadb_service }}"
+        state: stopped
+
+    - name: Bootstrap the cluster on the bootstrap host
+      ansible.builtin.command:
+        cmd: galera_new_cluster
+      changed_when: true
+      when: inventory_hostname == mariadb_bootstrap_host
+
+    - name: Wait for the bootstrap host to be Synced
+      ansible.builtin.include_tasks: wait_synced.yml
+      when: inventory_hostname == mariadb_bootstrap_host
+
+    # The SST user must exist on the donor before any joiner starts.
+    - name: Create users on the bootstrap host
+      ansible.builtin.include_tasks: users.yml
+      when: inventory_hostname == mariadb_bootstrap_host
+
+    - name: Start joiners one by one
+      ansible.builtin.systemd_service:
+        name: "{{ _mariadb_service }}"
+        state: started
+      throttle: 1
+      when: inventory_hostname != mariadb_bootstrap_host
+
+    - name: Wait for all nodes to be Synced after bootstrap
+      ansible.builtin.include_tasks: wait_synced.yml
+
+- name: Join nodes that are not Primary
+  when: _galera_cluster_alive
+  block:
+    - name: Restart nodes that are not Primary one by one
+      ansible.builtin.systemd_service:
+        name: "{{ _mariadb_service }}"
+        state: restarted
+      throttle: 1
+      when: not _mariadb_wsrep_primary
+
+    - name: Wait for joined nodes to be Synced
+      ansible.builtin.include_tasks: wait_synced.yml
+      when: not _mariadb_wsrep_primary
+
+- name: Enable MariaDB at boot
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+    enabled: true
+
+# force: false keeps the first write; never removed by deploy (ADR 0006).
+- name: Write Galera bootstrap marker
+  ansible.builtin.copy:
+    content: "Galera cluster bootstrapped by Tera. Do not remove: deploy relies on it (ADR 0006).\n"
+    dest: "{{ mariadb_galera_marker }}"
+    owner: root
+    group: mysql
+    mode: "0640"
+    force: false
+
+# Nodes (re)started above run with the current config (ADR 0009). After a fresh bootstrap that is
+# every node; after a join only the nodes that were not Primary.
+- name: Remove restart pending marker on nodes started with the current config
+  ansible.builtin.file:
+    path: "{{ mariadb_restart_marker }}"
+    state: absent
+  when: (not _galera_cluster_alive) or (not _mariadb_wsrep_primary)
+
+- name: Clear restart flag on nodes started with the current config
+  ansible.builtin.set_fact:
+    mariadb_restart_required: false
+  when: (not _galera_cluster_alive) or (not _mariadb_wsrep_primary)

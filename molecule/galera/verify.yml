@@ -1,0 +1,141 @@
+---
+# Galera verify (docs/TESTING.md). The VIP/HAProxy checks belong to phase 3.
+- name: Verify galera nodes
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Load MariaDB OS variables
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
+
+    - name: Set expected values
+      ansible.builtin.set_fact:
+        _verify_address: "{{ ip | default(ansible_facts['default_ipv4']['address']) }}"
+        # molecule/shared/config: mariadb/tuning.cnf (321) and mariadb/db01/host.cnf (432).
+        _verify_max_connections: "{{ 432 if inventory_hostname == 'db01' else 321 }}"
+
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Check MariaDB service is active and enabled
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['services'][_mariadb_service ~ '.service']['state'] == 'running'
+          - ansible_facts['services'][_mariadb_service ~ '.service']['status'] == 'enabled'
+
+    - name: Read wsrep status
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query:
+          - SHOW GLOBAL STATUS WHERE Variable_name IN
+            ('wsrep_cluster_size', 'wsrep_cluster_status', 'wsrep_local_state', 'wsrep_ready')
+          - SELECT @@max_connections AS max_connections, @@wsrep_sst_method AS sst_method
+      register: _verify_wsrep
+
+    - name: Check node is Synced in a 3-node Primary cluster
+      ansible.builtin.assert:
+        that:
+          - _verify_status['wsrep_cluster_size'] == '3'
+          - _verify_status['wsrep_cluster_status'] == 'Primary'
+          - _verify_status['wsrep_local_state'] == '4'
+          - _verify_status['wsrep_ready'] == 'ON'
+          - _verify_wsrep.query_result[1][0]['max_connections'] | int == _verify_max_connections | int
+          - _verify_wsrep.query_result[1][0]['sst_method'] == 'mariabackup'
+      vars:
+        _verify_status: "{{ _verify_wsrep.query_result[0] | items2dict(key_name='Variable_name', value_name='Value') }}"
+
+    - name: Check Tera state files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ mariadb_galera_marker }}"
+        - "{{ mariadb_restart_marker }}"
+        - "{{ _mariadb_config_dir }}/98-tera-sst.cnf"
+      register: _verify_files
+
+    - name: Check bootstrap marker, no pending restart and SST config mode
+      ansible.builtin.assert:
+        that:
+          - _verify_files.results[0].stat.exists
+          - not _verify_files.results[1].stat.exists
+          - _verify_files.results[2].stat.exists
+          - _verify_files.results[2].stat.mode == '0640'
+          - _verify_files.results[2].stat.pw_name == 'root'
+          - _verify_files.results[2].stat.gr_name == 'mysql'
+
+    - name: Read 99-tera.cnf
+      ansible.builtin.slurp:
+        src: "{{ _mariadb_config_dir }}/99-tera.cnf"
+      register: _verify_cnf
+
+    - name: Check 99-tera.cnf has the galera section and no secret
+      ansible.builtin.assert:
+        that:
+          - _verify_text.startswith('# Managed by Tera - JANGAN edit manual\n')
+          - "'\n[galera]\nwsrep_on = ON\n' in _verify_text"
+          - "'wsrep_sst_auth' not in _verify_text"
+          - mariadb_sst_password not in _verify_text
+      vars:
+        _verify_text: "{{ _verify_cnf['content'] | b64decode }}"
+      no_log: true
+
+    - name: Query server as admin over TCP
+      ansible.mysql.mysql_query:
+        login_host: "{{ _verify_address }}"
+        login_port: "{{ mariadb_port }}"
+        login_user: "{{ mariadb_admin_user | default('tera_admin') }}"
+        login_password: "{{ mariadb_admin_password }}"
+        query: SELECT COUNT(*) AS n FROM information_schema.schemata WHERE schema_name = 'app'
+      register: _verify_admin
+      no_log: true
+
+    - name: Check admin login and replicated database
+      ansible.builtin.assert:
+        that:
+          - _verify_admin.query_result[0][0]['n'] | int == 1
+
+- name: Verify replication
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Load MariaDB OS variables
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
+
+    - name: Generate a unique value
+      ansible.builtin.set_fact:
+        _verify_token: "{{ lookup('ansible.builtin.pipe', 'date +%s%N') }}"
+      run_once: true
+      delegate_to: localhost
+
+    - name: Create test table on db01
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query: CREATE TABLE IF NOT EXISTS app.verify_replication (id INT PRIMARY KEY, token VARCHAR(32))
+      when: inventory_hostname == 'db01'
+
+    - name: Write on db01
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query: REPLACE INTO app.verify_replication VALUES (1, %s)
+        positional_args:
+          - "{{ _verify_token }}"
+      when: inventory_hostname == 'db01'
+
+    - name: Read on db03
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query: SELECT token FROM app.verify_replication WHERE id = 1
+      register: _verify_read
+      until: (_verify_read.query_result[0] | length == 1) and (_verify_read.query_result[0][0]['token'] == _verify_token)
+      retries: 10
+      delay: 1
+      when: inventory_hostname == 'db03'

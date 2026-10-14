@@ -17,15 +17,6 @@
       'MAJOR.MINOR' (mis. "11.4", pakai tanda kutip). Perbaiki group_vars/all/tera.yml.
     quiet: true
 
-- name: Check galera mode is not used yet
-  ansible.builtin.assert:
-    that:
-      - mariadb_cluster_mode == 'standalone'
-    fail_msg: >-
-      Mode galera belum diimplementasikan (docs/ROADMAP.md Fase 2).
-      Set mariadb_cluster_mode: standalone di group_vars/all/tera.yml.
-    quiet: true
-
 - name: Check standalone topology
   ansible.builtin.assert:
     that:

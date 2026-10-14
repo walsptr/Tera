@@ -15,5 +15,11 @@
   ansible.builtin.include_tasks: standalone.yml
   when: mariadb_cluster_mode == 'standalone'
 
+- name: Bootstrap or join Galera cluster
+  ansible.builtin.include_tasks: galera.yml
+  when: mariadb_cluster_mode == 'galera'
+
+# Galera replicates users and databases: manage them on the bootstrap host only.
 - name: Manage users and databases
   ansible.builtin.include_tasks: users.yml
+  when: (mariadb_cluster_mode == 'standalone') or (inventory_hostname == mariadb_bootstrap_host)

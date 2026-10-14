@@ -87,6 +87,20 @@ TERA_BOX=almalinux/9 TERA_BOX_VERSION=9.8.20260907 molecule test -s standalone
    `molecule test -s standalone`, lalu commit. Box lama boleh dihapus dengan `vagrant box remove`.
 - Password test dibuat saat run di direktori ephemeral Molecule (tidak ada secret di repo).
 
+### Skenario 3 node (`galera`, `reconfigure`, `recover`)
+
+- Tiga VM `db01`..`db03`, masing-masing 2 vCPU dan **1536 MiB** RAM (total sekitar 5 GiB termasuk overhead
+  QEMU), disk overlay 5–7,5 GiB per run. OS dipilih dengan variabel `TERA_BOX*` yang sama seperti
+  `standalone`.
+- **Jangan pernah menjalankan dua skenario 3 node bersamaan.**
+- Matriks lokal: loop pengembangan di Ubuntu 24.04; sebelum mencentang item, `galera` di Ubuntu 22.04,
+  Ubuntu 24.04, dan Rocky 9 (berurutan); `reconfigure` dan `recover` di Ubuntu 24.04 dan Rocky 9 (satu per
+  keluarga OS, Rocky untuk SELinux). AlmaLinux 9 opsional. Skenario ini tidak dijalankan di CI.
+
+```bash
+TERA_BOX=cloud-image/ubuntu-24.04 TERA_BOX_VERSION=20260926.0.0 molecule test -s galera
+```
+
 ### `standalone-podman` (pelengkap cepat)
 
 Skenario `standalone-podman` menjalankan playbook yang sama (`molecule/shared/`) di container podman
@@ -111,7 +125,7 @@ Playbook converge/verify/prepare dipakai bersama di `molecule/shared/`.
 | Skenario | Verify |
 |---|---|
 | `standalone`, `standalone-podman` | service aktif; login admin via TCP; user anonymous & database `test` tidak ada; header Tera ada di `99-tera.cnf`; config per host aktif. Side effect (ADR 0009): run `--check` tidak menulis restart pending marker; run yang terputus setelah config ditulis meninggalkan marker dan config belum aktif; `converge` berikutnya me-restart, config aktif, marker hilang |
-| `galera` (3 node, LB colocated) | cluster size 3; semua Synced; marker ada; tulis di node 1 terbaca di node 3; login via VIP; clustercheck 200 |
+| `galera` (3 node) | fresh bootstrap; cluster size 3; semua Synced dan Primary; marker ada; tidak ada restart pending marker; `98-tera-sst.cnf` `0640 root:mysql`; `99-tera.cnf` punya `[galera]` dan tidak berisi secret; tulis di db01 terbaca di db03; login admin via TCP; idempotence `changed=0`. Side effect: db02 di-stop, `deploy` me-join db02 tanpa bootstrap ulang dan tanpa me-restart db01/db03. Login via VIP dan backend HAProxy diverifikasi di Fase 3 |
 | `reconfigure` | config global aktif di semua node dengan restart berurutan; config per host hanya me-restart host itu; run ulang tanpa restart |
 | `recover` | `kill -9` semua node → deploy FAIL dengan pesan recover → `tera recover` → size 3, data yang sudah commit utuh |
 | `scale` | node ke-4 join; node lama rolling restart; backend HAProxy bertambah |

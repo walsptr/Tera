@@ -1,0 +1,39 @@
+---
+# Join test (docs/GALERA-LIFECYCLE.md, "Join"): a stopped node rejoins on the next deploy, without
+# a new bootstrap and without restarting the nodes that stayed Primary.
+- name: Stop one node
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read MariaDB start time before
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_before
+
+    - name: Stop MariaDB on db02
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: stopped
+      when: inventory_hostname == 'db02'
+
+- name: Deploy
+  ansible.builtin.import_playbook: ../../site.yml
+
+- name: Check the join
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read MariaDB start time after
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_after
+
+    - name: Assert only db02 was started
+      ansible.builtin.assert:
+        that:
+          - (_se_after != _se_before) == (inventory_hostname == 'db02')
+      vars:
+        _se_before: "{{ _se_started_before.status.ActiveEnterTimestampMonotonic }}"
+        _se_after: "{{ _se_started_after.status.ActiveEnterTimestampMonotonic }}"

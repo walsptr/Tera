@@ -24,7 +24,7 @@ roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
 inventory/sample/{hosts.yml,group_vars/all/{tera.yml,passwords.yml},config/{mariadb,haproxy/conf.d,keepalived}}
 docs/
-molecule/{shared,standalone,standalone-podman}/   # shared = playbook converge/verify/prepare bersama
+molecule/{shared,standalone,standalone-podman,galera}/   # shared = playbook converge/verify/prepare bersama
 ```
 
 ## Inventory cluster
@@ -145,7 +145,6 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_databases` / `mariadb_users` | `[]` |
 | `mariadb_sst_user` | `tera_sst` (`@localhost`; password dari `mariadb_sst_password`) |
 
-Selama Fase 1, prechecks menolak `mariadb_cluster_mode: galera` (belum diimplementasikan).
 
 ## Topologi HA
 
