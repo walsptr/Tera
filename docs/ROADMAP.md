@@ -50,6 +50,13 @@ CI `molecule-podman` belum pernah jalan karena repo belum di-push ke GitHub.
 - [x] Clustercheck
 - [x] Molecule `galera`, `reconfigure`, `recover` (Ubuntu 22.04/24.04 dan Rocky 9 untuk `galera`; Ubuntu 24.04 dan Rocky 9 untuk `reconfigure` dan `recover`)
 
+Status: **selesai** (tag `v0.2.0`, 2026-10-15). Diverifikasi dengan Molecule dari VM baru: `galera` di Ubuntu
+22.04/24.04 dan Rocky 9 (SELinux enforcing, firewalld aktif); `reconfigure` dan `recover` di Ubuntu 24.04 dan
+Rocky 9; `standalone` diulang di Ubuntu 24.04 dan Rocky 9 setelah perubahan `sync`; `recover-poweroff`
+(opsional) di Ubuntu 24.04. Tetap terbuka: AlmaLinux 9 tidak dijalankan di VM (opsional), CI belum pernah
+jalan karena repo belum di-push ke GitHub, dan pengelolaan firewall untuk mode standalone serta pembatasan
+port 9200/3306 dibawa ke rencana Fase 3.
+
 ## Fase 3 — Load balancer
 
 - [ ] Role `loadbalancer` (sysctl, SELinux `haproxy_connect_any`)
