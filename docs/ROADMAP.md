@@ -65,7 +65,7 @@ port 9200/3306 dibawa ke rencana Fase 3.
 - [x] HAProxy single/multi writer + stats + custom config
 - [x] Keepalived unicast + custom config
 - [x] Prechecks load balancer
-- [ ] `tera destroy`
+- [x] `tera destroy` (+ `--keep-data`; Molecule `destroy`: Ubuntu 24.04, Rocky 9)
 - [x] Molecule failover (`loadbalancer`: Ubuntu 22.04, Ubuntu 24.04, Rocky 9)
 
 ## Fase 4 — Operasional

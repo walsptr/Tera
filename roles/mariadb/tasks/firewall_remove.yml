@@ -1,0 +1,36 @@
+---
+# Remove what firewall.yml added (ADR 0011): the zone ports and every rich rule for the ports Tera
+# owns in the default zone. Only when firewalld runs.
+- name: Collect service facts for firewall
+  ansible.builtin.service_facts:
+
+- name: Remove Tera firewalld rules
+  when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+  block:
+    - name: Read current firewalld rules
+      ansible.posix.firewalld_info:
+        active_zones: true
+      register: _mariadb_fw_info
+
+    - name: Close the zone ports
+      ansible.posix.firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop:
+        - "{{ mariadb_port }}"
+        - "{{ mariadb_clustercheck_port }}"
+
+    - name: Remove Tera rich rules
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop: >-
+        {{ (_mariadb_fw_zone.rich_rules | default([]))
+           | select('search', 'port port="(' ~ ([mariadb_port, mariadb_clustercheck_port, 4567, 4568, 4444] | join('|')) ~ ')"')
+           | list }}
+      vars:
+        _mariadb_fw_zone: "{{ _mariadb_fw_info.firewalld_info.zones[_mariadb_fw_info.firewalld_info.default_zone] }}"

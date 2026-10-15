@@ -36,3 +36,25 @@
   ansible.builtin.package:
     name: "{{ _mariadb_packages + (_mariadb_galera_packages if mariadb_cluster_mode == 'galera' else []) + mariadb_packages_extra }}"
     state: present
+
+# The package initializes the datadir only when it is installed. After `tera destroy` (packages stay,
+# datadir removed) deploy initializes it again.
+- name: Check the datadir is initialized
+  ansible.builtin.stat:
+    path: "{{ mariadb_datadir }}/mysql"
+  register: _mariadb_datadir_mysql
+
+- name: Initialize an empty datadir
+  ansible.builtin.command:
+    cmd: mariadb-install-db --user=mysql --datadir={{ mariadb_datadir }}
+  changed_when: true
+  when: not _mariadb_datadir_mysql.stat.exists
+  register: _mariadb_datadir_init
+
+- name: Restore SELinux labels on the new datadir # noqa: no-handler
+  ansible.builtin.command:
+    cmd: restorecon -R {{ mariadb_datadir }}
+  changed_when: true
+  when:
+    - _mariadb_datadir_init is changed
+    - (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'

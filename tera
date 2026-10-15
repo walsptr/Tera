@@ -17,7 +17,10 @@ Commands:
   deploy      -i <cluster> [args]    Deploy or converge the cluster
   reconfigure -i <cluster> [args]    Apply config changes, rolling restart if needed
   recover     -i <cluster> [args]    Recover a Galera cluster after full outage
-  destroy     -i <cluster> ${DESTROY_FLAG} [args]
+  destroy     -i <cluster> ${DESTROY_FLAG} [--keep-data] [args]
+                                     Stop everything and remove what Tera installed (packages stay).
+                                     --keep-data keeps the datadir (galera: and the bootstrap marker,
+                                     so the next deploy points to tera recover)
 
 <cluster> is a cluster folder (inventory/prod-a) or its hosts.yml.
 Any other argument is passed to ansible-playbook (e.g. --check --diff, --limit, -e k=v).
@@ -168,7 +171,7 @@ main() {
       ;;
   esac
 
-  local target="" confirm=false
+  local target="" confirm=false keep_data=false
   local extra=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -179,6 +182,10 @@ main() {
         ;;
       "$DESTROY_FLAG")
         confirm=true
+        shift
+        ;;
+      --keep-data)
+        keep_data=true
         shift
         ;;
       --)
@@ -193,6 +200,9 @@ main() {
     esac
   done
   [[ -n "$target" ]] || die "$cmd butuh -i inventory/<cluster>"
+  if $keep_data && [[ "$cmd" != destroy ]]; then
+    die "--keep-data hanya untuk destroy"
+  fi
   resolve_inventory "$target"
 
   case "$cmd" in
@@ -208,6 +218,9 @@ main() {
       ;;
     destroy)
       $confirm || die "destroy menghapus data. Ulangi dengan flag $DESTROY_FLAG jika yakin."
+      if $keep_data; then
+        extra=(-e tera_destroy_keep_data=true ${extra[@]+"${extra[@]}"})
+      fi
       run_playbook playbooks/destroy.yml -e tera_destroy_confirm=true ${extra[@]+"${extra[@]}"}
       ;;
   esac

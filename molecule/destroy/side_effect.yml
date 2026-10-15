@@ -1,0 +1,230 @@
+---
+# Destroy (docs/ARCHITECTURE.md, "Destroy"):
+# 1. without confirmation the destroy playbook is refused and nothing changes;
+# 2. --keep-data: datadir and bootstrap marker stay, Tera files/firewall/SELinux are gone; deploy then
+#    refuses (marker, no Primary) and tera recover brings the cluster back with the data;
+# 3. full destroy: datadir and /etc/tera are gone; deploy builds a new cluster without the old data.
+# Verify (molecule/loadbalancer/verify.yml) checks the cluster from step 3.
+- name: Write test data
+  hosts: db01
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Load MariaDB OS variables
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
+
+    - name: Create a table with a row
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query:
+          - CREATE TABLE IF NOT EXISTS app.destroy_t (id INT PRIMARY KEY)
+          - REPLACE INTO app.destroy_t VALUES (42)
+
+- name: Destroy without confirmation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run destroy without tera_destroy_confirm
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/destroy.yml
+          expect: "Destroy menghapus data"
+
+    - name: Run the CLI without the confirmation flag
+      ansible.builtin.command:
+        cmd: ./tera destroy -i inventory/sample
+        chdir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+      register: _se_cli
+      changed_when: false
+      failed_when: _se_cli.rc == 0 or 'yes-i-really-really-mean-it' not in _se_cli.stderr
+
+- name: Destroy keeping the data
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run destroy --keep-data
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/destroy.yml
+          args: [-e, tera_destroy_confirm=true, -e, tera_destroy_keep_data=true]
+          expect_success: true
+
+    - name: Assert the summary named the data that stays
+      ansible.builtin.assert:
+        that:
+          - "'Database non-sistem di /var/lib/mysql: app (DIPERTAHANKAN (--keep-data))' in (_se_run.stdout | regex_replace('\\s+', ' '))"
+
+- name: Check the node after destroy --keep-data
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Read paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /var/lib/mysql/app
+        - "{{ mariadb_galera_marker }}"
+        - /etc/haproxy/haproxy.cfg
+        - /etc/keepalived/keepalived.conf
+        - /usr/local/bin/tera-clustercheck
+        - "{{ tera_state_dir }}/clustercheck.cnf"
+      register: _se_paths
+
+    - name: Assert data and marker stay, services and Tera files are gone
+      ansible.builtin.assert:
+        that:
+          - _se_paths.results[0].stat.exists
+          - _se_paths.results[1].stat.exists
+          - not _se_paths.results[2].stat.exists
+          - not _se_paths.results[3].stat.exists
+          - not _se_paths.results[4].stat.exists
+          - not _se_paths.results[5].stat.exists
+          - ansible_facts['services']['mariadb.service']['state'] != 'running'
+          - ansible_facts['services']['haproxy.service']['state'] != 'running'
+          - ansible_facts['services']['keepalived.service']['state'] != 'running'
+
+    - name: Read firewalld rules
+      ansible.builtin.command:
+        cmd: firewall-cmd --list-all
+      register: _se_fw
+      changed_when: false
+      when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+
+    - name: Assert Tera firewall rules are gone
+      ansible.builtin.assert:
+        that:
+          - _se_fw.stdout is not search('port port="(3306|9200|4567|4568|4444|8404)"')
+          - "'vrrp' not in _se_fw.stdout"
+          - _se_fw.stdout is not search('ports:.*\\b(3306|9200)/tcp')
+      when: _se_fw is not skipped
+
+    - name: List SELinux modules
+      ansible.builtin.command:
+        cmd: semodule -l
+      register: _se_semodules
+      changed_when: false
+      when: (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+
+    - name: Assert the Tera SELinux module is gone
+      ansible.builtin.assert:
+        that:
+          - "'tera_galera' not in _se_semodules.stdout_lines"
+      when: _se_semodules is not skipped
+
+- name: Deploy over the kept data
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy (marker present, no Primary)
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect: "Tera tidak mem-bootstrap ulang secara otomatis"
+          expect_also: "./tera recover"
+
+    - name: Run recover
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-recover.yml
+          expect_success: true
+
+    - name: Run deploy after recover
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+- name: Check the kept data
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the test row
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT id FROM app.destroy_t"
+      register: _se_row
+      changed_when: false
+
+    - name: Assert the data survived on every node
+      ansible.builtin.assert:
+        that:
+          - _se_row.stdout | trim == '42'
+
+- name: Full destroy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run destroy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/destroy.yml
+          args: [-e, tera_destroy_confirm=true]
+          expect_success: true
+
+    - name: Assert the summary said the data goes
+      ansible.builtin.assert:
+        that:
+          - "'Database non-sistem di /var/lib/mysql: app (IKUT DIHAPUS)' in (_se_run.stdout | regex_replace('\\s+', ' '))"
+
+- name: Check the node after a full destroy
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Read paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /var/lib/mysql
+        - "{{ tera_state_dir }}"
+      register: _se_paths
+
+    - name: Assert datadir and Tera state are gone
+      ansible.builtin.assert:
+        that:
+          - not _se_paths.results[0].stat.exists
+          - not _se_paths.results[1].stat.exists
+
+- name: Deploy a new cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+- name: Check the new cluster has no old data
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Look for the old table
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'app' AND table_name = 'destroy_t'"
+      register: _se_old
+      changed_when: false
+
+    - name: Assert the old data is gone
+      ansible.builtin.assert:
+        that:
+          - _se_old.stdout | trim == '0'

@@ -61,7 +61,7 @@ Nilai yang wajib unik per cluster dan divalidasi di prechecks:
 | `deploy -i` | `site.yml` | `deploy` |
 | `reconfigure -i` | `site.yml` | `reconfigure` |
 | `recover -i [-e mariadb_recover_from=<node>]` | `playbooks/mariadb-recover.yml` | – |
-| `destroy -i … --yes-i-really-really-mean-it` | `playbooks/destroy.yml` (`-e tera_destroy_confirm=true`) | – |
+| `destroy -i … --yes-i-really-really-mean-it [--keep-data]` | `playbooks/destroy.yml` (`-e tera_destroy_confirm=true`, `--keep-data` → `-e tera_destroy_keep_data=true`) | – |
 
 Perilaku CLI:
 
@@ -74,7 +74,7 @@ Perilaku CLI:
   dan YAML. Key top-level dianggap kosong jika nilainya kosong, `""`, `''`, `~`, atau `null` dan baris
   berikutnya tidak menjorok (bukan parent mapping/list). File yang terenkripsi vault ditolak.
 - `new-cluster <nama>` membuat `inventory/<nama>` (nama: huruf, angka, `.`, `_`, `-`) dan menolak jika sudah ada.
-- `destroy` ditolak tanpa flag `--yes-i-really-really-mean-it`.
+- `destroy` ditolak tanpa flag `--yes-i-really-really-mean-it`. `--keep-data` hanya diterima oleh `destroy`.
 
 ## Alur play `site.yml`
 
@@ -248,6 +248,24 @@ Semua file yang dirender Tera diberi header "Managed by Tera".
 File yang dibaca MariaDB saat boot atau menjadi dasar keputusan Tera (`98`/`99-tera.cnf`, restart pending
 marker, marker bootstrap, file clustercheck) di-`sync` ke disk setelah berubah, sehingga mati listrik tidak
 meninggalkan file kosong atau terpotong. Restart pending marker di-`sync` sebelum config ditulis (ADR 0009).
+
+## Destroy
+
+`tera destroy -i inventory/<cluster> --yes-i-really-really-mean-it [--keep-data]`:
+
+1. Setiap host menampilkan ringkasan: file dan direktori yang akan dihapus, serta database non-sistem yang
+   ditemukan di datadir (pemeriksaan yang sama dengan pengaman SST) dan apakah ikut dihapus.
+2. Load balancer: HAProxy dan Keepalived dihentikan dan di-disable (VIP hilang); `haproxy.cfg`,
+   `keepalived.conf`, file sysctl, dan aturan firewalld buatan Tera dihapus.
+3. MariaDB: `tera-clustercheck` dan MariaDB dihentikan dan di-disable; `98`/`99-tera.cnf`, file dan unit
+   clustercheck, aturan firewalld (ADR 0011), modul `tera_galera` dan label port SELinux buatan Tera dihapus.
+4. Tanpa `--keep-data`: datadir dan `/etc/tera` ikut dihapus. Deploy berikutnya membangun cluster baru
+   (datadir kosong diinisialisasi dengan `mariadb-install-db`).
+5. Dengan `--keep-data`: datadir dipertahankan; di mode galera marker bootstrap juga dipertahankan, sehingga
+   deploy berikutnya gagal dengan arahan ke `tera recover`, yang memilih node dari `grastate.dat` (ADR 0006).
+   Di mode standalone deploy berikutnya langsung memakai datadir lama.
+
+Paket, repo MariaDB, dan boolean SELinux `haproxy_connect_any` tidak disentuh.
 
 ## Menambah engine baru
 

@@ -1,4 +1,103 @@
 ---
-- name: Fail because destroy is not implemented yet
-  ansible.builtin.fail:
-    msg: "Action 'destroy' belum diimplementasikan. Lihat docs/ROADMAP.md."
+# tera destroy (docs/ARCHITECTURE.md, "Destroy"): stop MariaDB and remove what Tera put on the node.
+# Packages and repositories stay. The datadir is removed unless tera_destroy_keep_data; with
+# keep-data in galera mode the bootstrap marker stays too, so the next deploy refuses to bootstrap
+# and points to tera recover (ADR 0006).
+- name: Check destroy was confirmed
+  ansible.builtin.assert:
+    that:
+      - tera_destroy_confirm | default(false) | bool
+    fail_msg: "Destroy menghapus data. Jalankan lewat: ./tera destroy -i inventory/<cluster> --yes-i-really-really-mean-it"
+    quiet: true
+
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Set destroy plan
+  ansible.builtin.set_fact:
+    _mariadb_keep_data: "{{ tera_destroy_keep_data | default(false) | bool }}"
+    _mariadb_destroy_paths: >-
+      {{ [_mariadb_config_dir ~ '/99-tera.cnf', _mariadb_config_dir ~ '/98-tera-sst.cnf',
+          tera_state_dir ~ '/clustercheck.cnf', mariadb_restart_marker, tera_state_dir ~ '/selinux',
+          '/usr/local/bin/tera-clustercheck', '/etc/systemd/system/tera-clustercheck.socket',
+          '/etc/systemd/system/tera-clustercheck@.service']
+         + ([] if (tera_destroy_keep_data | default(false) | bool) else [tera_state_dir, mariadb_datadir]) }}
+
+# Same check as the SST overwrite guard: directories in the datadir other than the system schemas.
+- name: Find databases in the datadir
+  ansible.builtin.find:
+    paths: "{{ mariadb_datadir }}"
+    file_type: directory
+    recurse: false
+  register: _mariadb_destroy_dirs
+
+- name: Show what will be removed
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: akan dihapus {{ _mariadb_destroy_paths | join(', ') }}; aturan firewalld dan
+      modul/label SELinux buatan Tera. Database non-sistem di {{ mariadb_datadir }}:
+      {{ _mariadb_user_databases | join(', ') if _mariadb_user_databases else 'tidak ada' }}
+      ({{ 'DIPERTAHANKAN (--keep-data)' if _mariadb_keep_data else 'IKUT DIHAPUS' }}).
+  vars:
+    _mariadb_user_databases: >-
+      {{ _mariadb_destroy_dirs.files | map(attribute='path') | map('basename')
+         | reject('in', ['mysql', 'performance_schema', 'sys']) | sort | list }}
+
+- name: Stop and disable tera-clustercheck
+  ansible.builtin.systemd_service:
+    name: tera-clustercheck.socket
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Stop and disable MariaDB
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Remove Tera files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ _mariadb_destroy_paths }}"
+
+- name: Reload systemd after removing units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Remove Tera firewall rules
+  ansible.builtin.include_tasks: firewall_remove.yml
+
+- name: Remove Tera SELinux customizations
+  when:
+    - ansible_facts['os_family'] == 'RedHat'
+    - (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+  block:
+    - name: List loaded SELinux modules
+      ansible.builtin.command:
+        cmd: semodule -l
+      register: _mariadb_semodules
+      changed_when: false
+
+    - name: Remove the tera_galera policy module
+      ansible.builtin.command:
+        cmd: semodule -r tera_galera
+      changed_when: true
+      when: "'tera_galera' in _mariadb_semodules.stdout_lines"
+
+    - name: Remove the Galera port labels
+      community.general.seport:
+        ports: "{{ item }}"
+        proto: tcp
+        setype: mysqld_port_t
+        state: absent
+      loop:
+        - "4568"
+        - "4444"
+
+- name: Flush removals to disk
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false

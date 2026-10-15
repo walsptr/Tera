@@ -1,0 +1,116 @@
+---
+# Destroy scenario (docs/TESTING.md): galera + load balancer colocated on 3 nodes (same platforms and
+# variables as molecule/loadbalancer). Destroy without confirmation is refused; --keep-data keeps the
+# data and the bootstrap marker (deploy then points to tera recover); a full destroy followed by deploy
+# gives a new cluster. Never run two 3-node scenarios at once.
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: vagrant
+  provider:
+    name: libvirt
+platforms:
+  - &node
+    name: db01
+    box: ${TERA_BOX:-cloud-image/ubuntu-22.04}
+    # "-" (not ":-"): an empty TERA_BOX_VERSION (box_url boxes, e.g. Rocky) must stay empty.
+    box_version: ${TERA_BOX_VERSION-20260926.0.0}
+    box_url: ${TERA_BOX_URL}
+    box_download_checksum: ${TERA_BOX_CHECKSUM}
+    box_download_checksum_type: ${TERA_BOX_CHECKSUM_TYPE}
+    memory: 1536
+    cpus: 2
+    # See molecule/standalone/molecule.yml: system libvirt and full Rocky disk size.
+    provider_options:
+      qemu_use_session: false
+      machine_virtual_size: 10
+    interfaces:
+      - &lbnet
+        network_name: private_network
+        ip: 10.77.0.11
+        libvirt__network_name: tera-lb
+        libvirt__dhcp_enabled: false
+        libvirt__forward_mode: none
+    groups:
+      - mariadb
+      - loadbalancer
+  - <<: *node
+    name: db02
+    interfaces:
+      - <<: *lbnet
+        ip: 10.77.0.12
+  - <<: *node
+    name: db03
+    interfaces:
+      - <<: *lbnet
+        ip: 10.77.0.13
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+    ANSIBLE_FILTER_PLUGINS: ${MOLECULE_PROJECT_DIRECTORY}/plugins/filter
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/collections
+  playbooks:
+    prepare: ../shared/prepare.yml
+    converge: ../shared/converge.yml
+    side_effect: side_effect.yml
+    verify: ../loadbalancer/verify.yml
+  inventory:
+    group_vars:
+      all:
+        tera_action: deploy
+        tera_config_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/config
+        mariadb_cluster_mode: galera
+        # Test-only passwords, generated outside the repo in the ephemeral directory.
+        mariadb_admin_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/admin_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_sst_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/sst_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_clustercheck_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/clustercheck_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        # Users are created on the bootstrap host only: list every node address explicitly. Only hosts
+        # with a known address: a --limit run (negative test) has no fact cache for the others.
+        mariadb_admin_hosts: >-
+          {{ ['localhost'] + (groups['mariadb'] | map('extract', hostvars) | selectattr('tera_listen_address', 'defined')
+             | map(attribute='tera_listen_address') | list) }}
+        haproxy_stats_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/stats_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        keepalived_auth_pass: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/vrrp_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_databases:
+          - name: app
+        tera_vip_address: 10.77.0.100
+        # The Molecule host (10.77.0.1) may read the stats page.
+        haproxy_stats_sources:
+          - 10.77.0.1
+    host_vars:
+      db01:
+        ip: 10.77.0.11
+      db02:
+        ip: 10.77.0.12
+      db03:
+        ip: 10.77.0.13
+scenario:
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - side_effect
+    - verify
+    - destroy
+verifier:
+  name: ansible

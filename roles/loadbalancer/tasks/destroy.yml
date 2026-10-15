@@ -1,4 +1,73 @@
 ---
-- name: Fail because destroy is not implemented yet
-  ansible.builtin.fail:
-    msg: "Action 'destroy' belum diimplementasikan. Lihat docs/ROADMAP.md."
+# tera destroy on load balancer nodes: stop HAProxy and Keepalived (the VIP goes away) and remove what
+# Tera put there. Packages and repositories stay; the haproxy_connect_any boolean is left as is.
+- name: Check destroy was confirmed
+  ansible.builtin.assert:
+    that:
+      - tera_destroy_confirm | default(false) | bool
+    fail_msg: "Destroy menghapus data. Jalankan lewat: ./tera destroy -i inventory/<cluster> --yes-i-really-really-mean-it"
+    quiet: true
+
+- name: Show what will be removed
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: HAProxy dan Keepalived dihentikan (VIP {{ tera_vip_address }} hilang); akan dihapus
+      /etc/haproxy/haproxy.cfg, /etc/keepalived/keepalived.conf, /etc/sysctl.d/90-tera-loadbalancer.conf dan
+      aturan firewalld buatan Tera (VRRP, stats{{ ', 3306' if inventory_hostname not in groups['mariadb'] else '' }}).
+
+- name: Stop and disable HAProxy and Keepalived
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - keepalived
+    - haproxy
+  failed_when: false
+
+- name: Remove Tera load balancer files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/haproxy/haproxy.cfg
+    - /etc/keepalived/keepalived.conf
+    - /etc/sysctl.d/90-tera-loadbalancer.conf
+
+- name: Collect service facts for firewall
+  ansible.builtin.service_facts:
+
+- name: Remove Tera firewalld rules
+  when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+  block:
+    - name: Read current firewalld rules
+      ansible.posix.firewalld_info:
+        active_zones: true
+      register: _lb_fw_info
+
+    - name: Close the client port on load balancer only nodes
+      ansible.posix.firewalld:
+        port: "{{ mariadb_port }}/tcp"
+        permanent: true
+        immediate: true
+        state: disabled
+      when: inventory_hostname not in groups['mariadb']
+
+    - name: Remove Tera load balancer rich rules
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop: >-
+        {{ (_lb_fw_zone.rich_rules | default([]))
+           | select('search', '(protocol value="vrrp"|port port="' ~ haproxy_stats_port ~ '"'
+                    ~ ('|port port="' ~ mariadb_port ~ '"' if inventory_hostname not in groups['mariadb'] else '') ~ ')')
+           | list }}
+      vars:
+        _lb_fw_zone: "{{ _lb_fw_info.firewalld_info.zones[_lb_fw_info.firewalld_info.default_zone] }}"
+
+- name: Flush removals to disk
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false

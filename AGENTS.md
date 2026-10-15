@@ -63,7 +63,7 @@ molecule test -s <scenario>        # standalone | standalone-podman | galera | r
 ./tera deploy      -i inventory/prod-a
 ./tera reconfigure -i inventory/prod-a [--check --diff]
 ./tera recover     -i inventory/prod-a [-e mariadb_recover_from=db02]
-./tera destroy     -i inventory/prod-a --yes-i-really-really-mean-it
+./tera destroy     -i inventory/prod-a --yes-i-really-really-mean-it [--keep-data]
 ```
 
 ## Konsep inti
