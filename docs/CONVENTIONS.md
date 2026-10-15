@@ -23,6 +23,9 @@ Dokumen ini wajib dibaca sebelum menulis kode.
     regex menerima backslash literal dan **diam-diam tidak pernah cocok**.
   - String YAML double-quoted (`"{{ ... }}"`): tulis `'\\s'`, karena YAML sendiri mengubah `\\` menjadi `\`.
   - Di `that:`/`when:` kedua bentuk bekerja, tetapi tetap ikuti aturan di atas agar konsisten.
+  - String literal Jinja memproses escape backslash: `'\b'` menjadi karakter backspace, `'\t'` menjadi tab.
+    Jangan memakai `\b` di regex Jinja; untuk output tabular pilih perbandingan tanpa regex, mis.
+    `stdout_lines | map('split') | map('join', '=')`. (`\s` lolos hanya karena bukan escape yang dikenal.)
   - Uji filter regex baru dengan playbook kecil sebelum dipakai. Bug ini pernah membuat `tera recover` tidak
     bisa membaca `WSREP: Recovered position`: posisi jatuh ke `-1`, dan recover menolak berjalan dengan pesan
     "uuid berbeda atau tidak ada posisi" yang menyesatkan.
