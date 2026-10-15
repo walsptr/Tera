@@ -7,6 +7,9 @@
 #    (never two holders): writer down, writer back (sessions on the backup are cut and counted),
 #    haproxy stopped, keepalived stopped, hard reset of the VIP holder. With nopreempt the VIP does
 #    not move back when a node returns.
+# 4. ADR 0011 on the load balancer role (firewalld only): a hand-made stats-port rule survives a deploy
+#    with tera_manage_firewall=false, is listed by deploy --check --diff (which changes nothing), and is
+#    removed by a normal deploy.
 - name: Negative prechecks and custom config
   hosts: localhost
   connection: local
@@ -85,6 +88,112 @@
       vars:
         _se_text: "{{ _se_haproxy.content | b64decode }}"
       no_log: true
+
+- name: Add a hand-made stats rule on db01
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Remember firewalld state
+      ansible.builtin.set_fact:
+        _se_fw: "{{ (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running' }}"
+
+    - name: Add a rich rule for the stats port by hand
+      ansible.builtin.command:
+        cmd: firewall-cmd {{ item }} --add-rich-rule='rule family="ipv4" source address="10.255.255.0/24" port port="8404" protocol="tcp" accept'
+      loop: ["", --permanent]
+      changed_when: true
+      when: _se_fw
+
+- name: Load balancer firewall with tera_manage_firewall=false and --check --diff
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_fw: "{{ hostvars['db01']['_se_fw'] | bool }}"
+  tasks:
+    - name: Run deploy with tera_manage_firewall=false
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: [-e, '{"tera_manage_firewall": false}']
+          expect_success: true
+      when: _se_fw
+
+    - name: Remember the deploy output
+      ansible.builtin.set_fact:
+        _se_unmanaged_out: "{{ _se_run.stdout }}"
+      when: _se_fw
+
+    - name: Run deploy --check --diff
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: [--check, --diff]
+          expect_success: true
+      when: _se_fw
+
+    - name: Assert only --check lists the hand-made rule for removal
+      ansible.builtin.assert:
+        that:
+          - "'aturan firewalld yang akan dihapus Tera' not in _se_unmanaged_out"
+          - "'db01: aturan firewalld yang akan dihapus Tera' in _se_check_out"
+          - "'source address=\"10.255.255.0/24\" port port=\"8404\"' in _se_check_out"
+      vars:
+        _se_check_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') | regex_replace('\\\\', '') }}"
+      when: _se_fw
+
+- name: Check the hand-made rule survived
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read rich rules
+      ansible.builtin.command:
+        cmd: firewall-cmd --list-rich-rules
+      register: _se_rules
+      changed_when: false
+      when: _se_fw
+
+    - name: Assert the rule is still there
+      ansible.builtin.assert:
+        that:
+          - "'10.255.255.0/24' in _se_rules.stdout"
+      when: _se_fw
+
+- name: Deploy with firewall management on
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+      when: hostvars['db01']['_se_fw'] | bool
+
+- name: Check the hand-made rule is gone
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read rich rules
+      ansible.builtin.command:
+        cmd: firewall-cmd {{ item }} --list-rich-rules
+      loop: ["", --permanent]
+      register: _se_rules
+      changed_when: false
+      when: _se_fw
+
+    - name: Assert the rule is gone (runtime and permanent)
+      ansible.builtin.assert:
+        that:
+          - _se_rules.results | map(attribute='stdout') | select('search', '10\\.255\\.255\\.0/24') | list | length == 0
+      when: _se_fw
 
 - name: Prepare test client on db03
   hosts: db03
