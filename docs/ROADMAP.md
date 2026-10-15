@@ -66,7 +66,7 @@ port 9200/3306 dibawa ke rencana Fase 3.
 - [x] Keepalived unicast + custom config
 - [x] Prechecks load balancer
 - [ ] `tera destroy`
-- [ ] Molecule failover
+- [x] Molecule failover (`loadbalancer`: Ubuntu 22.04, Ubuntu 24.04, Rocky 9)
 
 ## Fase 4 — Operasional
 

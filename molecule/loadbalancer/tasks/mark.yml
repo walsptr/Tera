@@ -1,0 +1,5 @@
+---
+# Sets _se_now to the controller time (same clock as probe.py).
+- name: Read controller time
+  ansible.builtin.set_fact:
+    _se_now: "{{ lookup('ansible.builtin.pipe', 'date +%s.%N') }}"

@@ -1,0 +1,165 @@
+---
+# Load balancer verify (docs/TESTING.md): VIP on exactly one node, reachable from the host, writer is
+# db01 (single_writer), stats needs auth, config and kernel settings, firewalld rules, no SELinux
+# denial for HAProxy/Keepalived/MariaDB, cluster whole.
+- name: Verify load balancer nodes
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Load MariaDB OS variables
+      ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
+
+    - name: Read VIP ownership
+      ansible.builtin.command:
+        cmd: ip -o -4 addr show
+      register: _verify_addr
+      changed_when: false
+
+    - name: Check exactly one node holds the VIP
+      ansible.builtin.assert:
+        that:
+          - _verify_holders | length == 1
+        fail_msg: "VIP {{ tera_vip_address }} dipegang oleh: {{ _verify_holders }}"
+      vars:
+        _verify_holders: >-
+          {{ ansible_play_hosts | map('extract', hostvars, ['_verify_addr', 'stdout'])
+             | zip(ansible_play_hosts) | selectattr('0', 'search', ' ' ~ tera_vip_address ~ '/')
+             | map(attribute='1') | list }}
+      run_once: true
+
+    - name: Read cluster state
+      ansible.mysql.mysql_query:
+        login_user: root
+        login_unix_socket: "{{ _mariadb_socket }}"
+        query: SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_cluster_size', 'wsrep_local_state')
+      register: _verify_wsrep
+
+    - name: Check the cluster is whole
+      ansible.builtin.assert:
+        that:
+          - _verify_status['wsrep_cluster_size'] == '3'
+          - _verify_status['wsrep_local_state'] == '4'
+      vars:
+        _verify_status: "{{ _verify_wsrep.query_result[0] | items2dict(key_name='Variable_name', value_name='Value') }}"
+
+    - name: Ask through the VIP which node serves writes
+      ansible.builtin.command:
+        cmd: >-
+          mariadb -h {{ tera_vip_address }} -P {{ mariadb_port }} -u {{ mariadb_admin_user | default('tera_admin') }}
+          -p{{ mariadb_admin_password }} -N -B -e "SELECT @@hostname"
+      register: _verify_writer
+      changed_when: false
+      no_log: true
+
+    - name: Check single_writer sends every client to db01
+      ansible.builtin.assert:
+        that:
+          - _verify_writer.stdout | trim == 'db01'
+
+    - name: Read rendered config
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - /etc/haproxy/haproxy.cfg
+        - /etc/keepalived/keepalived.conf
+      register: _verify_lb_cfg
+      no_log: true
+
+    - name: Check HAProxy and Keepalived config
+      ansible.builtin.assert:
+        that:
+          - _haproxy.startswith('# Managed by Tera - JANGAN edit manual\n')
+          - "'bind ' ~ tera_vip_address ~ ':' ~ mariadb_port in _haproxy"
+          - "'on-marked-up shutdown-backup-sessions' in _haproxy"
+          - _haproxy is search('server db02 .* backup')
+          - _haproxy is search('server db03 .* backup')
+          - _haproxy is not search('server db01 .* backup')
+          - _keepalived.startswith('# Managed by Tera - JANGAN edit manual\n')
+          - "'nopreempt' in _keepalived"
+          - "'state BACKUP' in _keepalived"
+      vars:
+        _haproxy: "{{ _verify_lb_cfg.results[0].content | b64decode }}"
+        _keepalived: "{{ _verify_lb_cfg.results[1].content | b64decode }}"
+      no_log: true
+
+    - name: Read ip_nonlocal_bind
+      ansible.builtin.command:
+        cmd: sysctl -n net.ipv4.ip_nonlocal_bind
+      register: _verify_nonlocal
+      changed_when: false
+
+    - name: Check ip_nonlocal_bind
+      ansible.builtin.assert:
+        that:
+          - _verify_nonlocal.stdout | trim == '1'
+
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Read firewalld rules
+      ansible.builtin.command:
+        cmd: firewall-cmd --list-all
+      register: _verify_fw
+      changed_when: false
+      when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+
+    # ADR 0011: clustercheck and VRRP only from the load balancers, stats only from haproxy_stats_sources.
+    - name: Check firewalld rules
+      ansible.builtin.assert:
+        that:
+          - _verify_cc | select('in', _verify_fw.stdout) | list | length == 3
+          - _verify_fw.stdout is not search('ports:.*\\b9200/tcp')
+          - "'source address=\"10.77.0.1\" port port=\"' ~ haproxy_stats_port ~ '\" protocol=\"tcp\" accept' in _verify_fw.stdout"
+          - _verify_vrrp | select('in', _verify_fw.stdout) | list | length == 2
+      vars:
+        _verify_cc: >-
+          {{ groups['loadbalancer'] | map('extract', hostvars, 'ip')
+             | map('regex_replace', '^(.*)$', 'rule family="ipv4" source address="\1" port port="9200" protocol="tcp" accept') | list }}
+        _verify_vrrp: >-
+          {{ groups['loadbalancer'] | reject('equalto', inventory_hostname) | map('extract', hostvars, 'ip')
+             | map('regex_replace', '^(.*)$', 'rule family="ipv4" source address="\1" protocol value="vrrp" accept') | list }}
+      when: _verify_fw is not skipped
+
+    - name: Search SELinux denials since boot
+      ansible.builtin.command:
+        cmd: ausearch --message AVC --start boot
+      register: _verify_avc
+      changed_when: false
+      failed_when: _verify_avc.rc not in [0, 1]
+      when: (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+
+    - name: Check there are no SELinux denials for MariaDB, HAProxy or Keepalived
+      ansible.builtin.assert:
+        that:
+          - _verify_avc.stdout_lines | select('search', 'mysqld_t|haproxy_t|keepalived_t') | list | length == 0
+        fail_msg: "SELinux denial: {{ _verify_avc.stdout_lines | select('search', 'mysqld_t|haproxy_t|keepalived_t') | list }}"
+      when: _verify_avc is not skipped
+
+- name: Verify from outside the VMs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Connect to MariaDB through the VIP from the host
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['db01']['tera_vip_address'] }}"
+        port: 3306
+        search_regex: MariaDB
+        timeout: 10
+
+    - name: Read the stats page without credentials
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['db01']['ip'] }}:8404/"
+        status_code: 401
+
+    - name: Read the stats page with credentials
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['db01']['ip'] }}:8404/"
+        url_username: tera
+        url_password: "{{ hostvars['db01']['haproxy_stats_password'] }}"
+        force_basic_auth: true
+        status_code: 200
+      no_log: true

@@ -1,0 +1,586 @@
+---
+# Load balancer side effects (docs/TESTING.md):
+# 1. prechecks refuse a VIP outside the subnet, a VIP another host answers ARP for, VRID 0 and bad
+#    stats sources; an invalid conf.d snippet is refused by haproxy -c, a valid one is appended;
+# 2. multi_writer renders leastconn without backups and serves through the VIP;
+# 3. failover with a probe from the host (downtime per kind <= 10 s) and VIP monitors on every node
+#    (never two holders): writer down, writer back (sessions on the backup are cut and counted),
+#    haproxy stopped, keepalived stopped, hard reset of the VIP holder. With nopreempt the VIP does
+#    not move back when a node returns.
+- name: Negative prechecks and custom config
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_config_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config"
+  tasks:
+    - name: Run deploy with bad load balancer settings
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      loop:
+        - args: [-e, tera_vip_address=10.78.0.100]
+          expect: "tidak berada di subnet"
+        - args: [-e, tera_vip_address=10.77.0.1]
+          expect: "sudah dipakai host lain"
+        - args: [-e, keepalived_virtual_router_id=0]
+          expect: "keepalived_virtual_router_id 1-255"
+        - args: [-e, '{"haproxy_stats_sources": ["10.77.0.5/24"]}']
+          expect: "Entri tidak valid: ['10.77.0.5/24']"
+      loop_control:
+        loop_var: _se_case
+        label: "{{ _se_case.expect }}"
+
+    - name: Create HAProxy snippet directory
+      ansible.builtin.file:
+        path: "{{ _se_config_dir }}/haproxy/conf.d"
+        state: directory
+        mode: "0755"
+
+    - name: Add an invalid HAProxy snippet
+      ansible.builtin.copy:
+        content: "this is not haproxy configuration\n"
+        dest: "{{ _se_config_dir }}/haproxy/conf.d/90-bad.cfg"
+        mode: "0644"
+
+    - name: Run deploy with the invalid snippet
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect: "failed to validate"
+
+    - name: Replace it with a valid snippet
+      ansible.builtin.copy:
+        content: |
+          # tera-test-snippet: appended by config.yml
+        dest: "{{ _se_config_dir }}/haproxy/conf.d/10-test.cfg"
+        mode: "0644"
+
+    - name: Remove the invalid snippet
+      ansible.builtin.file:
+        path: "{{ _se_config_dir }}/haproxy/conf.d/90-bad.cfg"
+        state: absent
+
+    - name: Run deploy with the valid snippet
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+- name: Check the snippets
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read haproxy.cfg
+      ansible.builtin.slurp:
+        src: /etc/haproxy/haproxy.cfg
+      register: _se_haproxy
+      no_log: true
+
+    - name: Assert the valid snippet is appended and the invalid one never reached the node
+      ansible.builtin.assert:
+        that:
+          - "'# --- haproxy/conf.d/10-test.cfg\n# tera-test-snippet' in _se_text"
+          - "'this is not haproxy' not in _se_text"
+          - "'haproxy/conf.d/10-test.cfg' in _se_text.splitlines()[2]"
+      vars:
+        _se_text: "{{ _se_haproxy.content | b64decode }}"
+      no_log: true
+
+- name: Prepare test client on db03
+  hosts: db03
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Write test client credentials
+      ansible.builtin.copy:
+        content: |
+          [client]
+          user = {{ mariadb_admin_user | default('tera_admin') }}
+          password = {{ mariadb_admin_password }}
+        dest: /root/tera-test.cnf
+        mode: "0600"
+      no_log: true
+
+- name: Multi writer
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_vip: "{{ hostvars['db01']['tera_vip_address'] }}"
+  tasks:
+    - name: Reconfigure to multi_writer
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, mariadb_lb_mode=multi_writer]
+          expect_success: true
+
+    - name: Read haproxy.cfg on db01
+      ansible.builtin.slurp:
+        src: /etc/haproxy/haproxy.cfg
+      register: _se_multi
+      delegate_to: db01
+      become: true
+      no_log: true
+
+    - name: Assert leastconn without backups
+      ansible.builtin.assert:
+        that:
+          - "'balance leastconn' in (_se_multi.content | b64decode)"
+          - (_se_multi.content | b64decode) is not search('server db0[0-9] .* backup')
+      no_log: true
+
+    - name: Login through the VIP
+      ansible.builtin.include_tasks: tasks/writer.yml
+
+    - name: Assert a node answered
+      ansible.builtin.assert:
+        that:
+          - _se_writer in ['db01', 'db02', 'db03']
+
+    - name: Reconfigure back to single_writer
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+- name: Start VIP monitors
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Copy VIP monitor
+      ansible.builtin.copy:
+        src: vip-monitor.sh
+        dest: /usr/local/sbin/tera-vip-monitor.sh
+        mode: "0755"
+
+    # A monitor left by an earlier, interrupted run on the same VMs would block systemd-run.
+    - name: Stop a VIP monitor from an earlier run
+      ansible.builtin.systemd_service:
+        name: tera-vip-monitor
+        state: stopped
+      failed_when: false
+
+    - name: Start VIP monitor
+      ansible.builtin.command:
+        cmd: systemd-run --unit=tera-vip-monitor --collect /usr/local/sbin/tera-vip-monitor.sh {{ tera_vip_address }} /var/log/tera-vip-monitor.log
+      changed_when: true
+
+- name: Failover
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+    _se_vip: "{{ hostvars['db01']['tera_vip_address'] }}"
+    _se_events: "{{ _se_eph }}/failover-events.log"
+    _se_mysql: mariadb --defaults-extra-file=/root/tera-test.cnf --connect-timeout=2 -h {{ hostvars['db01']['tera_vip_address'] }}
+  tasks:
+    - name: Start the probe from the host
+      ansible.builtin.shell:
+        cmd: >-
+          nohup {{ ansible_playbook_python }} {{ playbook_dir }}/files/probe.py {{ _se_vip }} 3306 {{ _se_eph }}/probe.log
+          > /dev/null 2>&1 & echo $!
+      register: _se_probe
+      changed_when: true
+
+    - name: Start a fresh events log
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ _se_events }}"
+        mode: "0644"
+
+    - name: Wait for a steady baseline
+      ansible.builtin.pause:
+        seconds: 5
+
+    # E1: the writer goes down.
+    - name: Mark start (writer down)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Remember start (writer down)
+      ansible.builtin.set_fact:
+        _se_t0: "{{ _se_now }}"
+
+    - name: Stop MariaDB on db01
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: stopped
+      delegate_to: db01
+      become: true
+
+    - name: Wait until db02 serves through the VIP
+      ansible.builtin.command:
+        cmd: '{{ _se_mysql }} -N -B -e "SELECT @@hostname"'
+      register: _se_w
+      until: _se_w.rc == 0 and _se_w.stdout | trim == 'db02'
+      retries: 30
+      delay: 1
+      changed_when: false
+      delegate_to: db03
+      become: true
+
+    - name: Let the probe settle (writer down)
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Mark end (writer down)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Record event (writer down)
+      ansible.builtin.lineinfile:
+        path: "{{ _se_events }}"
+        line: "{{ _se_t0 }} {{ _se_now }} writer down (db01 -> db02)"
+
+    # E2: the writer comes back; sessions on the backup are cut (on-marked-up shutdown-backup-sessions).
+    # Units from an earlier run on the same VMs would block systemd-run.
+    - name: Clear session units from an earlier run
+      ansible.builtin.command:
+        cmd: systemctl reset-failed tera-sess-1 tera-sess-2 tera-sess-3 tera-sess-4 tera-sess-5
+      changed_when: false
+      failed_when: false
+      delegate_to: db03
+      become: true
+
+    - name: Open long sessions through the VIP (served by db02)
+      ansible.builtin.command:
+        cmd: systemd-run --unit=tera-sess-{{ item }} {{ _se_mysql }} -N -B -e "SELECT SLEEP(600)"
+      loop: [1, 2, 3, 4, 5]
+      changed_when: true
+      delegate_to: db03
+      become: true
+
+    - name: Wait until the sessions run
+      ansible.builtin.systemd_service:
+        name: tera-sess-{{ item }}
+      register: _se_sess_active
+      until: _se_sess_active.status.ActiveState == 'active'
+      retries: 10
+      delay: 1
+      loop: [1, 2, 3, 4, 5]
+      delegate_to: db03
+      become: true
+
+    - name: Mark start (writer back)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Remember start (writer back)
+      ansible.builtin.set_fact:
+        _se_t0: "{{ _se_now }}"
+
+    - name: Start MariaDB on db01
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: started
+      delegate_to: db01
+      become: true
+
+    - name: Wait until db01 serves through the VIP again
+      ansible.builtin.command:
+        cmd: '{{ _se_mysql }} -N -B -e "SELECT @@hostname"'
+      register: _se_w
+      until: _se_w.rc == 0 and _se_w.stdout | trim == 'db01'
+      retries: 60
+      delay: 1
+      changed_when: false
+      delegate_to: db03
+      become: true
+
+    - name: Wait for the backup sessions to be cut
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Count the cut sessions
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          for i in 1 2 3 4 5; do systemctl show "tera-sess-$i" -p ActiveState --value; done | grep -cv '^active$' || true
+        executable: /bin/bash
+      register: _se_cut
+      changed_when: false
+      delegate_to: db03
+      become: true
+
+    - name: Mark end (writer back)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Record event (writer back)
+      ansible.builtin.lineinfile:
+        path: "{{ _se_events }}"
+        line: "{{ _se_t0 }} {{ _se_now }} writer back (db02 -> db01)"
+
+    - name: Save the cut session count
+      ansible.builtin.copy:
+        content: "sessions cut when db01 came back: {{ _se_cut.stdout | trim }} of 5\n"
+        dest: "{{ _se_eph }}/sessions-cut.txt"
+        mode: "0644"
+
+    - name: Assert the backup sessions were cut
+      ansible.builtin.assert:
+        that:
+          - _se_cut.stdout | trim | int == 5
+        fail_msg: "Hanya {{ _se_cut.stdout | trim }} dari 5 sesi di db02 yang diputus saat db01 kembali."
+        success_msg: "{{ _se_cut.stdout | trim }} dari 5 sesi di db02 diputus saat db01 kembali."
+
+    # E3: haproxy stops on the VIP holder.
+    - name: Find the VIP holder (haproxy stop)
+      ansible.builtin.include_tasks: tasks/vip_holder.yml
+
+    - name: Remember holder (haproxy stop)
+      ansible.builtin.set_fact:
+        _se_h: "{{ _se_holder }}"
+
+    - name: Mark start (haproxy stop)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Remember start (haproxy stop)
+      ansible.builtin.set_fact:
+        _se_t0: "{{ _se_now }}"
+
+    - name: Stop haproxy on the VIP holder
+      ansible.builtin.systemd_service:
+        name: haproxy
+        state: stopped
+      delegate_to: "{{ _se_h }}"
+      become: true
+
+    - name: Wait until the VIP leaves the holder
+      ansible.builtin.command:
+        cmd: ip -o -4 addr show
+      register: _se_a
+      until: (' ' ~ _se_vip ~ '/') not in _se_a.stdout
+      retries: 30
+      delay: 1
+      changed_when: false
+      delegate_to: "{{ _se_h }}"
+      become: true
+
+    - name: Let the probe settle (haproxy stop)
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Mark end (haproxy stop)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Record event (haproxy stop)
+      ansible.builtin.lineinfile:
+        path: "{{ _se_events }}"
+        line: "{{ _se_t0 }} {{ _se_now }} VIP failover: haproxy stopped on {{ _se_h }}"
+
+    - name: Find the new VIP holder (haproxy stop)
+      ansible.builtin.include_tasks: tasks/vip_holder.yml
+
+    - name: Assert the VIP moved (haproxy stop)
+      ansible.builtin.assert:
+        that:
+          - _se_holder not in [_se_h, 'none']
+
+    - name: Start haproxy again
+      ansible.builtin.systemd_service:
+        name: haproxy
+        state: started
+      delegate_to: "{{ _se_h }}"
+      become: true
+
+    - name: Give keepalived time to prefer the returning node (it must not)
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Find the VIP holder after haproxy returned
+      ansible.builtin.include_tasks: tasks/vip_holder.yml
+
+    - name: Assert the VIP did not move back (nopreempt)
+      ansible.builtin.assert:
+        that:
+          - _se_holder not in [_se_h, 'none']
+
+    # E4: keepalived stops on the VIP holder.
+    - name: Remember holder (keepalived stop)
+      ansible.builtin.set_fact:
+        _se_h: "{{ _se_holder }}"
+
+    - name: Mark start (keepalived stop)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Remember start (keepalived stop)
+      ansible.builtin.set_fact:
+        _se_t0: "{{ _se_now }}"
+
+    - name: Stop keepalived on the VIP holder
+      ansible.builtin.systemd_service:
+        name: keepalived
+        state: stopped
+      delegate_to: "{{ _se_h }}"
+      become: true
+
+    - name: Let the VIP move and the probe settle (keepalived stop)
+      ansible.builtin.pause:
+        seconds: 6
+
+    - name: Mark end (keepalived stop)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Record event (keepalived stop)
+      ansible.builtin.lineinfile:
+        path: "{{ _se_events }}"
+        line: "{{ _se_t0 }} {{ _se_now }} VIP failover: keepalived stopped on {{ _se_h }}"
+
+    - name: Find the new VIP holder (keepalived stop)
+      ansible.builtin.include_tasks: tasks/vip_holder.yml
+
+    - name: Assert the VIP moved (keepalived stop)
+      ansible.builtin.assert:
+        that:
+          - _se_holder not in [_se_h, 'none']
+
+    - name: Start keepalived again
+      ansible.builtin.systemd_service:
+        name: keepalived
+        state: started
+      delegate_to: "{{ _se_h }}"
+      become: true
+
+    - name: Give keepalived time to prefer the returning node (it must not)
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Find the VIP holder after keepalived returned
+      ansible.builtin.include_tasks: tasks/vip_holder.yml
+
+    - name: Assert the VIP did not move back (nopreempt)
+      ansible.builtin.assert:
+        that:
+          - _se_holder not in [_se_h, 'none']
+
+    # E5: hard reset of the VIP holder (sysrq "b": immediate reboot without sync).
+    - name: Remember holder (hard reset)
+      ansible.builtin.set_fact:
+        _se_h: "{{ _se_holder }}"
+
+    - name: Mark start (hard reset)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Remember start (hard reset)
+      ansible.builtin.set_fact:
+        _se_t0: "{{ _se_now }}"
+
+    - name: Hard reset the VIP holder
+      ansible.builtin.shell:
+        cmd: sleep 1; echo 1 > /proc/sys/kernel/sysrq; echo b > /proc/sysrq-trigger
+      async: 30
+      poll: 0
+      changed_when: true
+      delegate_to: "{{ _se_h }}"
+      become: true
+
+    - name: Let the VIP move and the probe settle (hard reset)
+      ansible.builtin.pause:
+        seconds: 12
+
+    - name: Mark end (hard reset)
+      ansible.builtin.include_tasks: tasks/mark.yml
+
+    - name: Record event (hard reset)
+      ansible.builtin.lineinfile:
+        path: "{{ _se_events }}"
+        line: "{{ _se_t0 }} {{ _se_now }} VIP failover: hard reset of {{ _se_h }}"
+
+    - name: Find the new VIP holder (hard reset)
+      ansible.builtin.include_tasks: tasks/vip_holder.yml
+      vars:
+        _se_skip: "{{ _se_h }}"
+
+    - name: Assert the VIP moved (hard reset)
+      ansible.builtin.assert:
+        that:
+          - _se_holder not in [_se_h, 'none']
+
+    - name: Wait for the reset node to come back
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 600
+      delegate_to: "{{ _se_h }}"
+
+    - name: Wait for MariaDB on the reset node to be Synced
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SHOW GLOBAL STATUS LIKE 'wsrep_local_state'"
+      register: _se_sync
+      until: _se_sync.rc == 0 and _se_sync.stdout.split() | last == '4'
+      retries: 60
+      delay: 5
+      changed_when: false
+      delegate_to: "{{ _se_h }}"
+      become: true
+
+    - name: Restart the VIP monitor on the reset node
+      ansible.builtin.command:
+        cmd: systemd-run --unit=tera-vip-monitor --collect /usr/local/sbin/tera-vip-monitor.sh {{ _se_vip }} /var/log/tera-vip-monitor.log
+      changed_when: true
+      delegate_to: "{{ _se_h }}"
+      become: true
+
+    - name: Give keepalived time to prefer the returning node (it must not)
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Find the VIP holder after the reset node returned
+      ansible.builtin.include_tasks: tasks/vip_holder.yml
+
+    - name: Assert the VIP did not move back (nopreempt)
+      ansible.builtin.assert:
+        that:
+          - _se_holder not in [_se_h, 'none']
+
+    - name: Stop the probe
+      ansible.builtin.command:
+        cmd: kill {{ _se_probe.stdout | trim }}
+      changed_when: true
+
+- name: Collect VIP monitor logs
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop VIP monitor
+      ansible.builtin.systemd_service:
+        name: tera-vip-monitor
+        state: stopped
+
+    - name: Fetch VIP monitor log
+      ansible.builtin.fetch:
+        src: /var/log/tera-vip-monitor.log
+        dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/vip-monitor/{{ inventory_hostname }}.log"
+        flat: true
+
+- name: Check failover
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
+    - name: Analyse probe and VIP monitors
+      ansible.builtin.command:
+        argv: >-
+          {{ [ansible_playbook_python, playbook_dir ~ '/files/check_failover.py', '10',
+              _se_eph ~ '/failover-events.log', _se_eph ~ '/probe.log']
+             + (groups['mariadb'] | map('regex_replace', '^(.*)$', '\1=' ~ _se_eph ~ '/vip-monitor/\1.log') | list) }}
+      register: _se_failover
+      changed_when: false
+      failed_when: false
+
+    - name: Save failover results
+      ansible.builtin.copy:
+        content: "{{ _se_failover.stdout }}\n"
+        dest: "{{ _se_eph }}/failover-results.txt"
+        mode: "0644"
+
+    - name: Assert downtime per failover <= 10 s and never two VIP holders
+      ansible.builtin.assert:
+        that:
+          - _se_failover.rc == 0
+        fail_msg: "{{ _se_failover.stdout_lines }}"
+        success_msg: "{{ _se_failover.stdout_lines }}"

@@ -1,0 +1,15 @@
+---
+# Sets _se_writer (the @@hostname that answers through the VIP, or "none") on localhost.
+# The client runs on db03 with the credentials written by side_effect.yml.
+- name: Ask through the VIP which node serves writes
+  ansible.builtin.command:
+    cmd: mariadb --defaults-extra-file=/root/tera-test.cnf --connect-timeout=2 -h {{ _se_vip }} -N -B -e "SELECT @@hostname"
+  register: _se_writer_out
+  changed_when: false
+  failed_when: false
+  delegate_to: db03
+  become: true
+
+- name: Set writer
+  ansible.builtin.set_fact:
+    _se_writer: "{{ (_se_writer_out.stdout | trim) if _se_writer_out.rc == 0 else 'none' }}"

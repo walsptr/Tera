@@ -1,0 +1,18 @@
+---
+# Sets _se_holder (inventory name of the node holding the VIP, or "none") on localhost.
+# _se_skip: a node not to contact (e.g. rebooting); it counts as not holding the VIP.
+- name: Read VIP ownership on every node
+  ansible.builtin.command:
+    cmd: ip -o -4 addr show
+  register: _se_addr
+  changed_when: false
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['loadbalancer'] | reject('equalto', _se_skip | default('')) | list }}"
+  failed_when: false
+  become: true
+
+- name: Set VIP holder
+  ansible.builtin.set_fact:
+    _se_holder: >-
+      {{ (_se_addr.results | selectattr('stdout', 'defined')
+          | selectattr('stdout', 'search', ' ' ~ _se_vip ~ '/') | map(attribute='item') | list + ['none']) | first }}
