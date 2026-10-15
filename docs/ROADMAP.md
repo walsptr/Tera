@@ -68,6 +68,13 @@ port 9200/3306 dibawa ke rencana Fase 3.
 - [x] `tera destroy` (+ `--keep-data`; Molecule `destroy`: Ubuntu 24.04, Rocky 9)
 - [x] Molecule failover (`loadbalancer`: Ubuntu 22.04, Ubuntu 24.04, Rocky 9)
 
+Status: **selesai** (tag `v0.3.0`, 2026-10-15). Setelah pengaman datadir (`mariadb-datadir.initialized`) dan
+`tera_manage_firewall`, semua skenario diulang dari VM baru dan lulus di Ubuntu 24.04 dan Rocky 9:
+`standalone`, `galera`, `reconfigure`, `recover`, `loadbalancer`, `destroy`. `loadbalancer` juga lulus di
+Ubuntu 22.04 sebelumnya. Downtime failover terukur ≤ 5,3 detik (batas 10 detik), split brain 0 sampel.
+Tetap terbuka: AlmaLinux 9 tidak dijalankan di VM (opsional), dan CI belum pernah jalan karena repo belum
+di-push ke GitHub.
+
 ## Fase 4 — Operasional
 
 - [ ] Upgrade MariaDB
