@@ -11,7 +11,7 @@ Aturan:
 
 - [x] Dokumen: `AGENTS.md`, `CLAUDE.md`, `docs/*`, ADR 0001–0008
 - [x] Skeleton repo, `ansible.cfg`, `requirements.yml`, `.gitignore`
-- [ ] CI: ansible-lint, syntax-check, pytest, shellcheck, ruff (belum diverifikasi: workflow belum pernah jalan di GitHub Actions; perintah setara lulus lokal)
+- [x] CI: ansible-lint, syntax-check, pytest, shellcheck, ruff (lulus di GitHub Actions 2026-10-15, run 38753663128)
 
 ## Fase 1 — Core + MariaDB standalone
 
@@ -27,7 +27,7 @@ Aturan:
 - [x] Play rolling restart + `restart.yml`
 - [x] Molecule `standalone` (Ubuntu 22.04, Ubuntu 24.04, Rocky 9 lulus 2026-10-14 dengan `vagrant`/`vagrant-libvirt` paket Fedora; AlmaLinux 9 opsional, belum dijalankan di VM)
 
-- [x] Molecule `standalone-podman` (pelengkap cepat: Ubuntu 22.04/24.04, Rocky 9, AlmaLinux 9; job CI belum diverifikasi di GitHub)
+- [x] Molecule `standalone-podman` (pelengkap cepat: Ubuntu 22.04/24.04, Rocky 9, AlmaLinux 9; job CI `molecule-podman` lulus di GitHub Actions 2026-10-15, run 38753663128)
 
 Kriteria fase: deploy berhasil di semua OS target, run kedua `changed=0`, reconfigure menerapkan config global dan per host.
 
@@ -72,8 +72,8 @@ Status: **selesai** (tag `v0.3.0`, 2026-10-15). Setelah pengaman datadir (`maria
 `tera_manage_firewall`, semua skenario diulang dari VM baru dan lulus di Ubuntu 24.04 dan Rocky 9:
 `standalone`, `galera`, `reconfigure`, `recover`, `loadbalancer`, `destroy`. `loadbalancer` juga lulus di
 Ubuntu 22.04 sebelumnya. Downtime failover terukur ≤ 5,3 detik (batas 10 detik), split brain 0 sampel.
-Tetap terbuka: AlmaLinux 9 tidak dijalankan di VM (opsional), dan CI belum pernah jalan karena repo belum
-di-push ke GitHub.
+Tetap terbuka: AlmaLinux 9 tidak dijalankan di VM (opsional; di CI hanya lewat `standalone-podman`).
+CI lulus di GitHub Actions setelah repo di-push (2026-10-15).
 
 ## Fase 4 — Operasional
 
