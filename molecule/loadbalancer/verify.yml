@@ -12,6 +12,17 @@
     - name: Load MariaDB OS variables
       ansible.builtin.include_vars: "{{ playbook_dir }}/../../roles/mariadb/vars/{{ ansible_facts['os_family'] }}.yml"
 
+    # Keepalived starts in BACKUP and needs about 3 adverts to elect a master; verify can run right
+    # after a deploy (molecule/destroy), so wait for the VIP before reading who holds it.
+    - name: Wait for the VIP to serve the client port
+      ansible.builtin.wait_for:
+        host: "{{ tera_vip_address }}"
+        port: "{{ mariadb_port }}"
+        timeout: 30
+      delegate_to: localhost
+      become: false
+      run_once: true
+
     - name: Read VIP ownership
       ansible.builtin.command:
         cmd: ip -o -4 addr show
