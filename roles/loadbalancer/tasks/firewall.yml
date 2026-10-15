@@ -32,6 +32,21 @@
       register: _lb_fw_info
       check_mode: false
 
+    - name: Compute load balancer firewall rules to remove
+      ansible.builtin.set_fact:
+        _lb_fw_remove: >-
+          {{ (_lb_fw_zone.rich_rules | default([]))
+             | select('search', '(' ~ (_lb_fw_owned | map('regex_escape') | join('|')) ~ ')')
+             | reject('in', _lb_fw_rules) | list }}
+      vars:
+        _lb_fw_zone: "{{ _lb_fw_info.firewalld_info.zones[_lb_fw_info.firewalld_info.default_zone] }}"
+
+    # Visible in normal runs and in --check --diff (ADR 0011: Tera owns these rules).
+    - name: Show load balancer firewall rules Tera will remove
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: aturan firewalld yang akan dihapus Tera (ADR 0011): {{ _lb_fw_remove }}."
+      when: _lb_fw_remove | length > 0
+
     - name: Open or close the client port for the whole zone
       ansible.posix.firewalld:
         port: "{{ mariadb_port }}/tcp"
@@ -46,12 +61,7 @@
         permanent: true
         immediate: true
         state: disabled
-      loop: >-
-        {{ (_lb_fw_zone.rich_rules | default([]))
-           | select('search', '(' ~ (_lb_fw_owned | map('regex_escape') | join('|')) ~ ')')
-           | reject('in', _lb_fw_rules) | list }}
-      vars:
-        _lb_fw_zone: "{{ _lb_fw_info.firewalld_info.zones[_lb_fw_info.firewalld_info.default_zone] }}"
+      loop: "{{ _lb_fw_remove }}"
 
     - name: Add expected load balancer rich rules
       ansible.posix.firewalld:

@@ -36,6 +36,7 @@ mariadb_cluster_mode: standalone # standalone | galera
 #   - 10.10.10.0/24
 # keepalived_interface: ""                                        # "" = interface holding the node address
 # mariadb_lb_mode: single_writer                                  # single_writer | multi_writer
+# tera_manage_firewall: true      # false = Tera never touches firewalld (deploy, reconfigure, destroy)
 # mariadb_firewall_manage: true   # manage firewalld when it runs, both modes (ADR 0011); ufw is not managed
 # mariadb_client_sources:          # who may reach mariadb_port (and the VIP); default ["0.0.0.0/0"]
 #   - 10.10.10.0/24

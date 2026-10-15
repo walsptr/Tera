@@ -28,6 +28,11 @@ mariadb_datadir_marker: "{{ tera_state_dir }}/mariadb-datadir.initialized"
 # Empty = use the default route address.
 tera_network_interface: ""
 
+# --- Firewall ---------------------------------------------------------------
+# Master switch (ADR 0011): false = Tera never touches firewalld (deploy, reconfigure, destroy), whatever
+# mariadb_firewall_manage / loadbalancer_firewall_manage say.
+tera_manage_firewall: true
+
 # --- Load balancer ----------------------------------------------------------
 tera_enable_loadbalancer: true
 # Computed: only galera clusters with a non-empty `loadbalancer` group get a load balancer.

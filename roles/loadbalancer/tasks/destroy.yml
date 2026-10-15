@@ -36,9 +36,15 @@
 
 - name: Collect service facts for firewall
   ansible.builtin.service_facts:
+  when:
+    - tera_manage_firewall | bool
+    - loadbalancer_firewall_manage | bool
 
 - name: Remove Tera firewalld rules
-  when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+  when:
+    - tera_manage_firewall | bool
+    - loadbalancer_firewall_manage | bool
+    - (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
   block:
     - name: Read current firewalld rules
       ansible.posix.firewalld_info:

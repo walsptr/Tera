@@ -33,6 +33,28 @@
       register: _mariadb_fw_info
       check_mode: false
 
+    - name: Compute firewall changes to show
+      ansible.builtin.set_fact:
+        _mariadb_fw_remove: >-
+          {{ (_mariadb_fw_zone.rich_rules | default([]))
+             | select('search', 'port port="(' ~ (_mariadb_fw_owned_ports | join('|')) ~ ')"')
+             | reject('in', _mariadb_fw_rules) | list }}
+        _mariadb_fw_close: >-
+          {{ (_mariadb_fw_zone.ports | default([]) | map('join', '/') | list)
+             | select('in', ([] if _mariadb_fw_client_open else [mariadb_port ~ '/tcp']) + [mariadb_clustercheck_port ~ '/tcp'])
+             | list }}
+      vars:
+        _mariadb_fw_zone: "{{ _mariadb_fw_info.firewalld_info.zones[_mariadb_fw_info.firewalld_info.default_zone] }}"
+
+    # Visible in normal runs and in --check --diff (ADR 0011: Tera owns these rules).
+    - name: Show firewall rules Tera will remove
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: aturan firewalld yang akan dihapus Tera (ADR 0011): rich rule
+          {{ _mariadb_fw_remove if _mariadb_fw_remove else 'tidak ada' }}; port zona yang ditutup
+          {{ _mariadb_fw_close if _mariadb_fw_close else 'tidak ada' }}.
+      when: (_mariadb_fw_remove | length > 0) or (_mariadb_fw_close | length > 0)
+
     - name: Open or close the client port for the whole zone
       ansible.posix.firewalld:
         port: "{{ mariadb_port }}/tcp"
@@ -54,12 +76,7 @@
         permanent: true
         immediate: true
         state: disabled
-      loop: >-
-        {{ (_mariadb_fw_zone.rich_rules | default([]))
-           | select('search', 'port port="(' ~ (_mariadb_fw_owned_ports | join('|')) ~ ')"')
-           | reject('in', _mariadb_fw_rules) | list }}
-      vars:
-        _mariadb_fw_zone: "{{ _mariadb_fw_info.firewalld_info.zones[_mariadb_fw_info.firewalld_info.default_zone] }}"
+      loop: "{{ _mariadb_fw_remove }}"
 
     - name: Add expected Tera rich rules
       ansible.posix.firewalld:

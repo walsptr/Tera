@@ -69,6 +69,9 @@
 
 - name: Remove Tera firewall rules
   ansible.builtin.include_tasks: firewall_remove.yml
+  when:
+    - tera_manage_firewall | bool
+    - mariadb_firewall_manage | bool
 
 - name: Remove Tera SELinux customizations
   when:

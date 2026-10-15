@@ -23,5 +23,6 @@ keepalived_interface: ""
 # Seconds between VRRP adverts; a backup takes over after about 3 missed adverts.
 keepalived_advert_int: 1
 
-# Manage firewalld on the load balancer nodes when it runs (ADR 0011). ufw is never managed.
+# Manage firewalld on the load balancer nodes when it runs (ADR 0011). ufw is never managed. Ignored
+# (never managed) when tera_manage_firewall is false.
 loadbalancer_firewall_manage: true

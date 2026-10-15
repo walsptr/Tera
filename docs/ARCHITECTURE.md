@@ -156,6 +156,7 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_clustercheck_user` | `tera_clustercheck` (`@localhost`, tanpa privilege; password dari `mariadb_clustercheck_password`) |
 | `mariadb_recover_from` | `""` (`tera recover`: paksa node bootstrap; kosong = otomatis) |
 | `mariadb_datadir` | `/var/lib/mysql` (dibaca pengaman SST dan `tera recover`; samakan jika custom config mengubah datadir) |
+| `tera_manage_firewall` | `true` (`false` = Tera tidak pernah menyentuh firewalld) |
 | `mariadb_firewall_manage` | `true` (kedua mode, hanya jika firewalld berjalan; ADR 0011) |
 | `mariadb_selinux_permissive` | `false` (`true` = domain `mysqld_t` permissive; tidak disarankan) |
 
@@ -223,9 +224,14 @@ default:
 | 4567/tcp+udp, 4568/tcp, 4444/tcp (galera) | hanya alamat node cluster |
 
 Tera memiliki rich rule untuk port-port itu di zona default dan menyamakannya setiap deploy/reconfigure: rule
-dengan sumber yang tidak lagi diharapkan dihapus, termasuk rule buatan tangan untuk port yang sama. Tera tidak
-menyalakan firewalld dan tidak mengelola ufw (prechecks memberi peringatan jika ufw aktif). Matikan dengan
-`mariadb_firewall_manage: false` jika firewall dikelola sendiri.
+dengan sumber yang tidak lagi diharapkan dihapus, termasuk rule buatan tangan untuk port yang sama. Sebelum
+menghapus, Tera menampilkan rule dan port zona yang akan dihapus per host; tampilan ini juga muncul di
+`--check --diff` (tanpa perubahan). Tera tidak menyalakan firewalld dan tidak mengelola ufw (prechecks memberi
+peringatan jika ufw aktif).
+
+`tera_manage_firewall: false` (global, default `true`) membuat Tera **sama sekali tidak menyentuh firewalld**
+di deploy, reconfigure, dan destroy, untuk role `mariadb` maupun `loadbalancer`. `mariadb_firewall_manage` dan
+`loadbalancer_firewall_manage` hanya mematikan per role dan diabaikan jika `tera_manage_firewall` false.
 
 ## Artefak di node
 

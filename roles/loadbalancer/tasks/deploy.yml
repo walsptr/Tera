@@ -18,7 +18,9 @@
 
 - name: Open firewall ports
   ansible.builtin.include_tasks: firewall.yml
-  when: loadbalancer_firewall_manage | bool
+  when:
+    - tera_manage_firewall | bool
+    - loadbalancer_firewall_manage | bool
 
 - name: Configure HAProxy and Keepalived
   ansible.builtin.import_tasks: config.yml

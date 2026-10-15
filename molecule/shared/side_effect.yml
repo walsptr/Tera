@@ -24,29 +24,83 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    _se_db01: "{{ hostvars['db01']['ansible_facts']['default_ipv4']['address'] }}"
+    _se_fw: "{{ hostvars['db01']['_se_firewalld'] | bool }}"
   tasks:
+    # tera_manage_firewall=false: Tera must not touch firewalld at all.
+    - name: Deploy restricted sources with tera_manage_firewall=false
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: [-e, '{"mariadb_client_sources": ["10.255.255.0/24"], "tera_manage_firewall": false}']
+          expect_success: true
+      when: _se_fw
+
+    - name: Connect from the Molecule host (firewall untouched)
+      ansible.builtin.wait_for:
+        host: "{{ _se_db01 }}"
+        port: 3306
+        search_regex: MariaDB
+        timeout: 5
+      when: _se_fw
+
     - name: Deploy with sources that exclude the Molecule host
       ansible.builtin.include_tasks: tasks/tera_run.yml
       vars:
         _se_case:
           args: [-e, '{"mariadb_client_sources": ["10.255.255.0/24"]}']
           expect_success: true
-      when: hostvars['db01']['_se_firewalld'] | bool
+      when: _se_fw
 
     - name: Connect to MariaDB from the Molecule host
       ansible.builtin.wait_for:
-        host: "{{ hostvars['db01']['ansible_facts']['default_ipv4']['address'] }}"
+        host: "{{ _se_db01 }}"
         port: 3306
         timeout: 5
       register: _se_refused
       ignore_errors: true
-      when: hostvars['db01']['_se_firewalld'] | bool
+      when: _se_fw
 
     - name: Assert the host is refused
       ansible.builtin.assert:
         that:
           - _se_refused is failed
-      when: hostvars['db01']['_se_firewalld'] | bool
+      when: _se_fw
+
+    # --check --diff back to the default sources shows the rule Tera would remove, changes nothing.
+    - name: Run deploy --check --diff with the default sources
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: [--check, --diff]
+          expect_success: true
+      when: _se_fw
+
+    - name: Assert the rule to remove is shown
+      ansible.builtin.assert:
+        that:
+          - "'aturan firewalld yang akan dihapus Tera' in _se_check_out"
+          - "'source address=\"10.255.255.0/24\" port port=\"3306\"' in _se_check_out"
+          - "\"port zona yang ditutup tidak ada\" in _se_check_out"
+      vars:
+        _se_check_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') | regex_replace('\\\\', '') }}"
+      when: _se_fw
+
+    - name: Connect again after --check (still refused)
+      ansible.builtin.wait_for:
+        host: "{{ _se_db01 }}"
+        port: 3306
+        timeout: 5
+      register: _se_refused_check
+      ignore_errors: true
+      when: _se_fw
+
+    - name: Assert --check changed nothing
+      ansible.builtin.assert:
+        that:
+          - _se_refused_check is failed
+      when: _se_fw
 
 - name: Empty the datadir as if its disk were not mounted
   hosts: mariadb
