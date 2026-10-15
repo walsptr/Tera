@@ -19,6 +19,9 @@ tera_state_dir: /etc/tera
 mariadb_restart_marker: "{{ tera_state_dir }}/mariadb-restart-pending"
 # Galera bootstrap marker (ADR 0006): written after Tera bootstrapped/joined the cluster.
 mariadb_galera_marker: "{{ tera_state_dir }}/mariadb-galera.bootstrapped"
+# Datadir marker: written once the datadir was initialized; with the marker, an empty datadir fails
+# deploy (missing mount) instead of being initialized again.
+mariadb_datadir_marker: "{{ tera_state_dir }}/mariadb-datadir.initialized"
 
 # --- Network ----------------------------------------------------------------
 # Interface used to derive tera_listen_address when host var `ip` is not set.

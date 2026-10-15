@@ -69,6 +69,16 @@
           - _verify_query.query_result[2][0]['n'] | int == 0
           - _verify_query.query_result[3][0]['n'] | int == 1
 
+    - name: Check datadir marker
+      ansible.builtin.stat:
+        path: "{{ mariadb_datadir_marker }}"
+      register: _verify_datadir_marker
+
+    - name: Check the datadir marker exists
+      ansible.builtin.assert:
+        that:
+          - _verify_datadir_marker.stat.exists
+
     - name: Check restart pending marker
       ansible.builtin.stat:
         path: "{{ tera_state_dir }}/mariadb-restart-pending"

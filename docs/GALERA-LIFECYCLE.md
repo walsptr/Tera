@@ -46,6 +46,12 @@ Agregat dihitung **di setiap host** dari `ansible_play_hosts` (bukan `run_once` 
   tetap jalan walau MariaDB mati. Pesan error menyebut node dan database yang ditemukan, dan menyarankan
   `mariadb_bootstrap_host` jika data ada di node non-bootstrap saat fresh bootstrap. Override eksplisit:
   `mariadb_galera_allow_sst_overwrite: true` (default `false`).
+- **Datadir tidak hilang diam-diam.** Jika marker datadir (`mariadb_datadir_marker`) ada tetapi datadir kosong
+  (tidak ada `mysql/`, mis. disk data gagal di-mount atau SST sebelumnya gagal), deploy gagal sebelum MariaDB
+  disentuh. Tanpa aturan ini, node Galera dengan datadir kosong akan diisi ulang lewat SST ke disk root.
+  Jika datadir memang sengaja dikosongkan, operator menghapus marker setelah memastikan mount benar.
+  Node yang menerima SST secara normal tidak terpengaruh: marker ditulis saat deploy pertama (datadir sudah
+  diinisialisasi paket) dan `mysql/` tetap ada setelah SST.
 
 ## Tabel keputusan
 

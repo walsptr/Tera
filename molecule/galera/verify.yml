@@ -54,6 +54,7 @@
         - "{{ mariadb_galera_marker }}"
         - "{{ mariadb_restart_marker }}"
         - "{{ _mariadb_config_dir }}/98-tera-sst.cnf"
+        - "{{ mariadb_datadir_marker }}"
       register: _verify_files
 
     - name: Check bootstrap marker, no pending restart and SST config mode
@@ -65,6 +66,7 @@
           - _verify_files.results[2].stat.mode == '0640'
           - _verify_files.results[2].stat.pw_name == 'root'
           - _verify_files.results[2].stat.gr_name == 'mysql'
+          - _verify_files.results[3].stat.exists
 
     - name: Read 99-tera.cnf
       ansible.builtin.slurp:

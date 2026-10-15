@@ -1,7 +1,9 @@
 ---
 # 1. ADR 0011 (vagrant, firewalld running): with mariadb_client_sources not covering the Molecule host,
 #    the host cannot reach 3306. The next converge restores the default sources (verify checks access).
-# 2. ADR 0009: a run interrupted after 99-tera.cnf was written must still restart next time.
+# 2. Datadir guard: with the datadir marker present, an empty datadir (missing mount) fails deploy
+#    instead of being initialized; the datadir is put back afterwards.
+# 3. ADR 0009: a run interrupted after 99-tera.cnf was written must still restart next time.
 # Sequence: idempotence -> side_effect (this) -> converge -> verify.
 
 - name: Check whether firewalld runs
@@ -45,6 +47,73 @@
         that:
           - _se_refused is failed
       when: hostvars['db01']['_se_firewalld'] | bool
+
+- name: Empty the datadir as if its disk were not mounted
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Stop MariaDB
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: stopped
+
+    - name: Move the datadir away
+      ansible.builtin.command:
+        cmd: mv /var/lib/mysql /var/lib/mysql.tera-test
+        creates: /var/lib/mysql.tera-test
+
+    - name: Leave an empty datadir behind
+      ansible.builtin.file:
+        path: /var/lib/mysql
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: "0755"
+
+- name: Deploy over the empty datadir
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect: "Tera tidak membuat database kosong baru. Periksa mount dan disk datadir"
+
+- name: Put the datadir back
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the empty datadir stayed empty (nothing was initialized)
+      ansible.builtin.find:
+        paths: /var/lib/mysql
+        file_type: any
+      register: _se_empty
+
+    - name: Assert nothing was initialized
+      ansible.builtin.assert:
+        that:
+          - _se_empty.matched == 0
+
+    - name: Remove the empty datadir
+      ansible.builtin.file:
+        path: /var/lib/mysql
+        state: absent
+
+    - name: Move the datadir back
+      ansible.builtin.command:
+        cmd: mv /var/lib/mysql.tera-test /var/lib/mysql
+        creates: /var/lib/mysql
+
+    - name: Start MariaDB
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: started
 
 - name: Add a pending config change
   hosts: localhost

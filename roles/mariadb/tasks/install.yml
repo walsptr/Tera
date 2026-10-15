@@ -37,12 +37,31 @@
     name: "{{ _mariadb_packages + (_mariadb_galera_packages if mariadb_cluster_mode == 'galera' else []) + mariadb_packages_extra }}"
     state: present
 
-# The package initializes the datadir only when it is installed. After `tera destroy` (packages stay,
-# datadir removed) deploy initializes it again.
+# Datadir guard. The package initializes the datadir only when it is installed; after `tera destroy`
+# (packages stay, datadir and /etc/tera removed) deploy initializes it again. Once a datadir was
+# initialized, mariadb_datadir_marker records it: an empty datadir later means a missing mount or a
+# broken disk, never "initialize a new empty database on the root disk".
 - name: Check the datadir is initialized
   ansible.builtin.stat:
     path: "{{ mariadb_datadir }}/mysql"
   register: _mariadb_datadir_mysql
+
+- name: Check the datadir marker
+  ansible.builtin.stat:
+    path: "{{ mariadb_datadir_marker }}"
+  register: _mariadb_datadir_marker_stat
+
+- name: Refuse to initialize a datadir that was initialized before
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }}: {{ mariadb_datadir }} kosong atau belum terinisialisasi (tidak ada
+      {{ mariadb_datadir }}/mysql), padahal marker {{ mariadb_datadir_marker }} menandakan datadir ini pernah
+      terinisialisasi. Tera tidak membuat database kosong baru. Periksa mount dan disk datadir (mis. findmnt
+      {{ mariadb_datadir }}), lalu ulangi. Jika datadir memang sengaja dikosongkan (mis. node Galera yang akan
+      diisi ulang lewat SST), hapus {{ mariadb_datadir_marker }} setelah memastikan mount benar.
+  when:
+    - _mariadb_datadir_marker_stat.stat.exists
+    - not _mariadb_datadir_mysql.stat.exists
 
 - name: Initialize an empty datadir
   ansible.builtin.command:
@@ -58,3 +77,27 @@
   when:
     - _mariadb_datadir_init is changed
     - (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+
+- name: Create Tera state directory for the datadir marker
+  ansible.builtin.file:
+    path: "{{ tera_state_dir }}"
+    state: directory
+    owner: root
+    group: mysql
+    mode: "0750"
+
+- name: Write datadir marker
+  ansible.builtin.copy:
+    content: "MariaDB datadir {{ mariadb_datadir }} initialized. Managed by Tera: an empty datadir now means a missing mount.\n"
+    dest: "{{ mariadb_datadir_marker }}"
+    owner: root
+    group: mysql
+    mode: "0640"
+    force: false
+  register: _mariadb_datadir_marker_write
+
+- name: Flush datadir marker to disk # noqa: no-handler
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+  when: _mariadb_datadir_marker_write is changed

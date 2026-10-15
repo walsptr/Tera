@@ -117,6 +117,7 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `tera_state_dir` | `/etc/tera` |
 | `mariadb_restart_marker` | `{{ tera_state_dir }}/mariadb-restart-pending` |
 | `mariadb_galera_marker` | `{{ tera_state_dir }}/mariadb-galera.bootstrapped` |
+| `mariadb_datadir_marker` | `{{ tera_state_dir }}/mariadb-datadir.initialized` |
 | `tera_network_interface` | `""` |
 | `mariadb_cluster_mode` | `standalone` |
 | `mariadb_version` | `"11.4"` |
@@ -234,6 +235,7 @@ menyalakan firewalld dan tidak mengelola ufw (prechecks memberi peringatan jika 
 | Kredensial SST (galera) | `98-tera-sst.cnf` di direktori yang sama, `0640 root:mysql`; satu-satunya file config yang berisi secret, ditulis dengan `no_log` tanpa diff |
 | State Tera | `/etc/tera/` (`0750 root:mysql`) |
 | Marker bootstrap | `/etc/tera/mariadb-galera.bootstrapped` |
+| Marker datadir | `/etc/tera/mariadb-datadir.initialized` (`0640 root:mysql`): ditulis setelah datadir pertama kali terinisialisasi; jika marker ada tetapi datadir kosong (tidak ada `mysql/`), deploy gagal dan meminta operator mengecek mount/disk, bukan menginisialisasi database baru |
 | Restart pending marker | `/etc/tera/mariadb-restart-pending` (`0640 root:mysql`, ADR 0009) |
 | Modul SELinux (RHEL, galera) | `/etc/tera/selinux/tera_galera.{te,mod,pp}`, dimuat dengan `semodule` |
 | Kredensial clustercheck | `/etc/tera/clustercheck.cnf` (`0640 root:mysql`) |
@@ -259,9 +261,9 @@ meninggalkan file kosong atau terpotong. Restart pending marker di-`sync` sebelu
    `keepalived.conf`, file sysctl, dan aturan firewalld buatan Tera dihapus.
 3. MariaDB: `tera-clustercheck` dan MariaDB dihentikan dan di-disable; `98`/`99-tera.cnf`, file dan unit
    clustercheck, aturan firewalld (ADR 0011), modul `tera_galera` dan label port SELinux buatan Tera dihapus.
-4. Tanpa `--keep-data`: datadir dan `/etc/tera` ikut dihapus. Deploy berikutnya membangun cluster baru
-   (datadir kosong diinisialisasi dengan `mariadb-install-db`).
-5. Dengan `--keep-data`: datadir dipertahankan; di mode galera marker bootstrap juga dipertahankan, sehingga
+4. Tanpa `--keep-data`: datadir dan `/etc/tera` (termasuk marker datadir) ikut dihapus. Deploy berikutnya
+   membangun cluster baru (datadir kosong diinisialisasi dengan `mariadb-install-db`).
+5. Dengan `--keep-data`: datadir dan marker datadir dipertahankan; di mode galera marker bootstrap juga dipertahankan, sehingga
    deploy berikutnya gagal dengan arahan ke `tera recover`, yang memilih node dari `grastate.dat` (ADR 0006).
    Di mode standalone deploy berikutnya langsung memakai datadir lama.
 
