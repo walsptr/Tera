@@ -5,6 +5,9 @@
 #    restarting the nodes that stayed Primary (docs/GALERA-LIFECYCLE.md, "Join");
 # 3. SST overwrite guard: a node without marker that holds user databases is refused, then joins
 #    with mariadb_galera_allow_sst_overwrite=true.
+# 4. Datadir guard: db02 with its datadir marker and an empty datadir (missing mount) makes deploy fail;
+#    db02 is not refilled by SST on the root disk and the other nodes stay Primary. With the datadir
+#    back, deploy rejoins db02.
 - name: Negative prechecks
   hosts: localhost
   connection: local
@@ -166,4 +169,97 @@
       vars:
         _se_case:
           args: [-e, mariadb_galera_allow_sst_overwrite=true]
+          expect_success: true
+
+- name: Empty the datadir of db02 as if its disk were not mounted
+  hosts: db02
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop MariaDB on db02
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: stopped
+
+    - name: Move the datadir away
+      ansible.builtin.command:
+        cmd: mv /var/lib/mysql /var/lib/mysql.tera-test
+        creates: /var/lib/mysql.tera-test
+
+    - name: Leave an empty datadir behind
+      ansible.builtin.file:
+        path: /var/lib/mysql
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: "0755"
+
+- name: Deploy over the empty datadir of db02
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect: "Tera tidak membuat database kosong baru. Periksa mount dan disk datadir"
+
+- name: Check db02 was not refilled and the others stayed Primary
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: List the datadir of db02
+      ansible.builtin.find:
+        paths: /var/lib/mysql
+        file_type: any
+        hidden: true
+      register: _se_empty
+      when: inventory_hostname == 'db02'
+
+    - name: Assert nothing was initialized or received on db02
+      ansible.builtin.assert:
+        that:
+          - _se_empty.matched == 0
+      when: inventory_hostname == 'db02'
+
+    - name: Read cluster state on the other nodes
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_cluster_status', 'wsrep_cluster_size')"
+      register: _se_wsrep
+      changed_when: false
+      when: inventory_hostname != 'db02'
+
+    - name: Assert the other nodes stayed Primary without db02
+      ansible.builtin.assert:
+        that:
+          - "'wsrep_cluster_status=Primary' in _se_status"
+          - "'wsrep_cluster_size=2' in _se_status"
+        fail_msg: "{{ inventory_hostname }}: {{ _se_status }}"
+      vars:
+        _se_status: "{{ _se_wsrep.stdout_lines | map('split') | map('join', '=') | list }}"
+      when: inventory_hostname != 'db02'
+
+    - name: Remove the empty datadir
+      ansible.builtin.file:
+        path: /var/lib/mysql
+        state: absent
+      when: inventory_hostname == 'db02'
+
+    - name: Move the datadir back
+      ansible.builtin.command:
+        cmd: mv /var/lib/mysql.tera-test /var/lib/mysql
+        creates: /var/lib/mysql
+      when: inventory_hostname == 'db02'
+
+- name: Deploy with the datadir of db02 back
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
           expect_success: true
