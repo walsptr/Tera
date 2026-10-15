@@ -33,6 +33,9 @@ provisioner:
   inventory:
     group_vars:
       all:
+        # Molecule connects to the container as root: no sudo needed. On GitHub runners (rootless
+        # podman) sudo root -> root fails in the Rocky/Alma images with a PAM account error.
+        ansible_become: false
         tera_action: deploy
         tera_config_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/config
         # Test-only password, generated outside the repo in the ephemeral directory.
