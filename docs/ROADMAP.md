@@ -74,6 +74,9 @@ Status: **selesai** (tag `v0.3.0`, 2026-10-15). Setelah pengaman datadir (`maria
 Ubuntu 22.04 sebelumnya. Downtime failover terukur ≤ 5,3 detik (batas 10 detik), split brain 0 sampel.
 Tetap terbuka: AlmaLinux 9 tidak dijalankan di VM (opsional; di CI hanya lewat `standalone-podman`).
 CI lulus di GitHub Actions setelah repo di-push (2026-10-15).
+Tag `v0.3.1` (2026-10-15): test tambahan untuk pengaman datadir di node Galera dan `tera_manage_firewall`
+serta tampilan rule di role `loadbalancer`, plus perbaikan CI. Lulus dari VM baru di Ubuntu 24.04 dan Rocky 9
+(`standalone`, `galera`, `loadbalancer`, `destroy`) dan di GitHub Actions.
 
 ## Fase 4 — Operasional
 
