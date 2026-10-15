@@ -1,2 +1,71 @@
 ---
-[]
+# HAProxy and Keepalived config (docs/CUSTOM-CONFIG.md, "HAProxy dan Keepalived"):
+# - haproxy.cfg: role template, or config/haproxy/haproxy.cfg as a full replacement (rendered as
+#   Jinja2), then config/haproxy/conf.d/*.cfg appended in alphabetical order;
+# - keepalived.conf: role template, or config/keepalived/keepalived.conf as a full replacement.
+# Validated before writing; applied with a reload (handlers, ADR 0007). Both files hold secrets
+# (stats password, auth_pass): no_log and no diff.
+- name: Find load balancer custom config
+  ansible.builtin.set_fact:
+    _lb_haproxy_custom: "{{ query('ansible.builtin.fileglob', tera_config_dir ~ '/haproxy/haproxy.cfg') }}"
+    _lb_haproxy_snippets: "{{ query('ansible.builtin.fileglob', tera_config_dir ~ '/haproxy/conf.d/*.cfg') | sort }}"
+    _lb_keepalived_custom: "{{ query('ansible.builtin.fileglob', tera_config_dir ~ '/keepalived/keepalived.conf') }}"
+
+- name: Build haproxy.cfg
+  ansible.builtin.set_fact:
+    _lb_haproxy_cfg: |-
+      # Managed by Tera - JANGAN edit manual
+      # Ubah lewat custom config: config/haproxy/
+      # Sources: {{ ([(_lb_haproxy_custom | first | relpath(tera_config_dir)) if _lb_haproxy_custom else 'role:haproxy.cfg.j2']
+                     + (_lb_haproxy_snippets | map('relpath', tera_config_dir) | list)) | join(', ') }}
+
+      {{ lookup('ansible.builtin.template', _lb_haproxy_custom | first if _lb_haproxy_custom else 'haproxy.cfg.j2') | trim }}
+      {% for snippet in _lb_haproxy_snippets %}
+
+      # --- {{ snippet | relpath(tera_config_dir) }}
+      {{ lookup('ansible.builtin.template', snippet) | trim }}
+      {% endfor %}
+  no_log: true
+
+- name: Build keepalived.conf
+  ansible.builtin.set_fact:
+    _lb_keepalived_cfg: |-
+      # Managed by Tera - JANGAN edit manual
+      # Ubah lewat custom config: config/keepalived/
+      # Sources: {{ (_lb_keepalived_custom | first | relpath(tera_config_dir)) if _lb_keepalived_custom else 'role:keepalived.conf.j2' }}
+
+      {{ lookup('ansible.builtin.template', _lb_keepalived_custom | first if _lb_keepalived_custom else 'keepalived.conf.j2') | trim }}
+  no_log: true
+
+- name: Write haproxy.cfg
+  ansible.builtin.copy:
+    content: "{{ _lb_haproxy_cfg }}\n"
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: haproxy
+    mode: "0640"
+    validate: haproxy -c -f %s
+  diff: false
+  no_log: true
+  register: _lb_haproxy_write
+  notify: Reload haproxy
+
+- name: Write keepalived.conf
+  ansible.builtin.copy:
+    content: "{{ _lb_keepalived_cfg }}\n"
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0640"
+    validate: keepalived -t -f %s
+  diff: false
+  no_log: true
+  register: _lb_keepalived_write
+  notify: Reload keepalived
+
+# Durable before the services read them (same rule as the MariaDB config).
+- name: Flush load balancer config to disk # noqa: no-handler
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+  when: (_lb_haproxy_write is changed) or (_lb_keepalived_write is changed)

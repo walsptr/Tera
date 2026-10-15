@@ -1,0 +1,55 @@
+---
+# The VIP held by a load balancer node of this cluster is normal (every deploy after the first).
+# Otherwise nobody may answer ARP for it (arping duplicate address detection). Runs in prechecks
+# and again in deploy once arping is installed.
+# Read live, not from facts: the fact cache (gathering = smart) may predate the VIP.
+- name: Read local IPv4 addresses
+  ansible.builtin.command:
+    cmd: ip -o -4 addr show
+  register: _loadbalancer_addresses
+  changed_when: false
+  check_mode: false
+
+- name: Check whether a load balancer node of this cluster holds the VIP
+  ansible.builtin.set_fact:
+    _loadbalancer_vip_held: >-
+      {{ (ansible_play_hosts | map('extract', hostvars) | selectattr('_loadbalancer_addresses', 'defined')
+          | map(attribute='_loadbalancer_addresses') | map(attribute='stdout')
+          | select('search', ' ' ~ (tera_vip_address | regex_escape) ~ '/') | list | length) > 0 }}
+
+- name: Check arping is available
+  ansible.builtin.command:
+    cmd: sh -c 'command -v arping'
+  register: _loadbalancer_arping
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: not _loadbalancer_vip_held
+
+- name: Probe the VIP with ARP
+  ansible.builtin.command:
+    cmd: arping -D -c 2 -w 3 -I {{ _loadbalancer_interface }} {{ tera_vip_address }}
+  register: _loadbalancer_arp
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not _loadbalancer_vip_held
+    - _loadbalancer_arping.rc | default(1) == 0
+
+# arping -D exits 1 when another host answered.
+- name: Refuse a VIP that another host uses
+  ansible.builtin.fail:
+    msg: >-
+      {{ tera_vip_address }} sudah dipakai host lain di jaringan {{ _loadbalancer_interface }} (menjawab ARP), dan
+      tidak dipegang node load balancer cluster ini. Pilih VIP yang bebas untuk tera_vip_address.
+  when:
+    - _loadbalancer_arp is not skipped
+    - _loadbalancer_arp.rc | default(0) == 1
+
+- name: Note that the VIP check was skipped
+  ansible.builtin.debug:
+    msg: "arping belum terpasang di {{ inventory_hostname }}; cek VIP diulang saat deploy setelah paket terpasang."
+  when:
+    - not _loadbalancer_vip_held
+    - _loadbalancer_arping.rc | default(1) != 0

@@ -1,0 +1,7 @@
+---
+# RHEL with SELinux enabled: HAProxy must connect to the MariaDB and clustercheck ports.
+- name: Allow HAProxy to connect to any port
+  ansible.posix.seboolean:
+    name: haproxy_connect_any
+    state: true
+    persistent: true

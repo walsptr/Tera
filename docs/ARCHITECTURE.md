@@ -132,6 +132,12 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `keepalived_virtual_router_id` | `51` |
 | `mariadb_lb_mode` | `single_writer` (`single_writer` \| `multi_writer`) |
 | `haproxy_stats_port` | `8404` |
+| `haproxy_stats_sources` | `[]` (IPv4/CIDR yang boleh membuka halaman stats; kosong = hanya node load balancer) |
+| `haproxy_stats_user` | `tera` (password: `haproxy_stats_password`) |
+| `haproxy_check_inter` / `haproxy_check_fastinter` / `haproxy_check_fall` / `haproxy_check_rise` | `1s` / `500ms` / `3` / `2` |
+| `haproxy_timeout_check` | `1s` (node yang mati mendadak hanya terdeteksi lewat timeout check) |
+| `keepalived_interface` | `""` (kosong = interface yang memegang `tera_listen_address`) |
+| `loadbalancer_firewall_manage` | `true` (firewalld di node load balancer, ADR 0011) |
 
 Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 
@@ -171,6 +177,21 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 
 - `mysqld` bind ke `tera_listen_address`, **tidak boleh** `0.0.0.0`.
 - `auth_pass` VRRP hanya memakai 8 karakter pertama.
+- HAProxy `single_writer` (ADR 0004): node pertama group `mariadb` menerima semua koneksi, node lain `backup`
+  sesuai urutan inventory. Health check `option httpchk` ke `tera-clustercheck` (`inter 1s fastinter 500ms fall 3 rise 2`,
+  `timeout check 1s`; variabel `haproxy_check_*` dan `haproxy_timeout_check`),
+  `on-marked-down shutdown-sessions`. Saat writer kembali, `on-marked-up shutdown-backup-sessions` **memutus
+  sesi yang sedang berjalan di backup** agar semua klien kembali ke writer: aplikasi harus siap reconnect.
+  `multi_writer`: `balance leastconn`, tanpa backup.
+- Keepalived: VRRP unicast (`unicast_src_ip` = `tera_listen_address`, peer = node load balancer lain), semua
+  node `state BACKUP` + `nopreempt`, prioritas mengikuti urutan inventory (`150 - indeks`). VIP **tidak pindah
+  balik** saat node yang mati kembali. `track_script` memindahkan VIP jika HAProxy mati. Interface VIP =
+  interface yang memegang `tera_listen_address` (atau `keepalived_interface`).
+- Prechecks load balancer: VIP IPv4 di subnet interface VIP dan bukan alamat node, prefix 1-32, VRID 1-255,
+  password stats dan `auth_pass` terisi, `haproxy_stats_sources` valid, warning jika hanya satu node load
+  balancer. VIP yang sedang dipegang node load balancer cluster ini dianggap normal; selain itu `arping -D`
+  harus tidak mendapat jawaban (VIP dipakai host lain = gagal).
+- RHEL dengan SELinux: boolean `haproxy_connect_any` di-set agar HAProxy boleh ke port 3306/9200 backend.
 
 ## Port
 
@@ -181,8 +202,8 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | 4568/tcp | IST |
 | 4444/tcp | SST |
 | 9200/tcp | tera-clustercheck |
-| 8404/tcp | HAProxy stats |
-| protokol 112 | VRRP |
+| 8404/tcp | HAProxy stats (dari `haproxy_stats_sources`) |
+| protokol 112 | VRRP (hanya dari node load balancer lain) |
 
 SELinux (RHEL, mode galera, SELinux enabled): Tera memasang label `mysqld_port_t` untuk 4568/tcp (IST, tidak
 berlabel) dan 4444/tcp (SST, default `kerberos_port_t`), dan memuat modul policy minimal `tera_galera`
@@ -218,8 +239,9 @@ menyalakan firewalld dan tidak mengelola ufw (prechecks memberi peringatan jika 
 | Kredensial clustercheck | `/etc/tera/clustercheck.cnf` (`0640 root:mysql`) |
 | Script clustercheck | `/usr/local/bin/tera-clustercheck` |
 | Unit systemd | `tera-clustercheck.socket`, `tera-clustercheck@.service` |
-| HAProxy | `/etc/haproxy/haproxy.cfg` (`0640`) |
-| Keepalived | `/etc/keepalived/keepalived.conf` (`0640`) |
+| HAProxy | `/etc/haproxy/haproxy.cfg` (`0640 root:haproxy`, berisi password stats) |
+| Keepalived | `/etc/keepalived/keepalived.conf` (`0640 root:root`, berisi `auth_pass`) |
+| Sysctl load balancer | `/etc/sysctl.d/90-tera-loadbalancer.conf` (`net.ipv4.ip_nonlocal_bind = 1`) |
 
 Semua file yang dirender Tera diberi header "Managed by Tera".
 

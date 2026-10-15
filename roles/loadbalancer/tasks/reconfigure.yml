@@ -1,2 +1,10 @@
 ---
-[]
+- name: Run prechecks
+  ansible.builtin.import_tasks: prechecks.yml
+
+- name: Open firewall ports
+  ansible.builtin.include_tasks: firewall.yml
+  when: loadbalancer_firewall_manage | bool
+
+- name: Configure HAProxy and Keepalived
+  ansible.builtin.import_tasks: config.yml

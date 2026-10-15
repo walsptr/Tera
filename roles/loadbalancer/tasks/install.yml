@@ -1,2 +1,14 @@
 ---
-[]
+- name: Install load balancer packages
+  ansible.builtin.package:
+    name: "{{ _loadbalancer_packages }}"
+    state: present
+
+# HAProxy binds the VIP on every node, including the ones that do not hold it.
+- name: Allow binding to the VIP on every node
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    sysctl_file: /etc/sysctl.d/90-tera-loadbalancer.conf
+    sysctl_set: true
+    state: present

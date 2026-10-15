@@ -365,7 +365,13 @@ wsrep_on = ON
 ## HAProxy dan Keepalived
 
 - `config/haproxy/haproxy.cfg` custom = pengganti penuh template role (tetap dirender sebagai Jinja2).
-- `config/haproxy/conf.d/*.cfg` di-append ke `haproxy.cfg` dengan urutan alfabetis.
+- `config/haproxy/conf.d/*.cfg` di-append ke `haproxy.cfg` dengan urutan alfabetis. Setiap snippet diawali
+  baris `# --- haproxy/conf.d/<nama>.cfg`.
 - `config/keepalived/keepalived.conf` custom = pengganti penuh template role.
-- Validasi sebelum ditulis: `haproxy -c -f %s` dan `keepalived -t -f %s`.
+- File hasil diawali header "Managed by Tera" dengan baris `# Sources:` (path relatif terhadap
+  `tera_config_dir`, deterministik).
+- Validasi sebelum ditulis: `haproxy -c -f %s` dan `keepalived -t -f %s`. Config yang tidak valid ditolak dan
+  file di node tidak berubah.
 - Perubahan diterapkan dengan reload, bukan restart.
+- `haproxy.cfg` (password stats) dan `keepalived.conf` (`auth_pass`) berisi secret: ditulis dengan `no_log` dan
+  **tanpa diff**. `--check --diff` tidak menampilkan isinya.

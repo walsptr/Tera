@@ -32,6 +32,9 @@ mariadb_cluster_mode: standalone # standalone | galera
 # mariadb_galera_cluster_name: "{{ inventory_dir | basename }}"   # must be unique per cluster
 # tera_vip_address: 10.0.0.10                                     # must be unique per cluster
 # keepalived_virtual_router_id: 51                                # must be unique per L2 network
+# haproxy_stats_sources:                                          # who may open the stats page; [] = LB nodes only
+#   - 10.10.10.0/24
+# keepalived_interface: ""                                        # "" = interface holding the node address
 # mariadb_lb_mode: single_writer                                  # single_writer | multi_writer
 # mariadb_firewall_manage: true   # manage firewalld when it runs, both modes (ADR 0011); ufw is not managed
 # mariadb_client_sources:          # who may reach mariadb_port (and the VIP); default ["0.0.0.0/0"]

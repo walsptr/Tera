@@ -1,0 +1,12 @@
+---
+- name: Load OS family variables
+  ansible.builtin.include_vars: "{{ ansible_facts['os_family'] }}.yml"
+
+# Interface holding tera_listen_address, unless keepalived_interface is set.
+- name: Find the VIP interface
+  ansible.builtin.set_fact:
+    _loadbalancer_interface: >-
+      {{ keepalived_interface if keepalived_interface | length > 0
+         else (ansible_facts['interfaces'] | map('regex_replace', '[-.:]', '_') | map('extract', ansible_facts)
+               | selectattr('ipv4', 'defined') | selectattr('ipv4.address', 'equalto', tera_listen_address)
+               | map(attribute='device') | first | default('')) }}

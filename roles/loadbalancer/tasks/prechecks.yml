@@ -1,2 +1,91 @@
 ---
-[]
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Check load balancer mode
+  ansible.builtin.assert:
+    that:
+      - mariadb_lb_mode in ['single_writer', 'multi_writer']
+    fail_msg: "mariadb_lb_mode harus 'single_writer' atau 'multi_writer' (sekarang '{{ mariadb_lb_mode }}'). Perbaiki group_vars/all/tera.yml."
+    quiet: true
+
+- name: Check VIP and VRRP settings
+  ansible.builtin.assert:
+    that:
+      - tera_vip_address | tera_is_ipv4
+      - tera_vip_cidr_prefix | int >= 1
+      - tera_vip_cidr_prefix | int <= 32
+      - keepalived_virtual_router_id | int >= 1
+      - keepalived_virtual_router_id | int <= 255
+      - tera_vip_address not in (groups['mariadb'] + groups['loadbalancer']) | map('extract', hostvars, 'tera_listen_address')
+    fail_msg: >-
+      Load balancer butuh tera_vip_address berupa IPv4 yang tidak dipakai node mana pun (sekarang
+      '{{ tera_vip_address }}'), tera_vip_cidr_prefix 1-32 (sekarang {{ tera_vip_cidr_prefix }}), dan
+      keepalived_virtual_router_id 1-255 yang unik di jaringan L2 ini (sekarang {{ keepalived_virtual_router_id }}).
+      Perbaiki group_vars/all/tera.yml.
+    quiet: true
+
+- name: Check the VIP interface
+  ansible.builtin.assert:
+    that:
+      - _loadbalancer_interface | length > 0
+      - ansible_facts[_loadbalancer_interface | regex_replace('[-.:]', '_')]['ipv4'] is defined
+    fail_msg: >-
+      {{ inventory_hostname }}: interface untuk VIP tidak ditemukan (tidak ada interface dengan alamat
+      {{ tera_listen_address }}, atau keepalived_interface '{{ keepalived_interface }}' tidak punya IPv4).
+      Set keepalived_interface atau host var ip di hosts.yml.
+    quiet: true
+
+- name: Check the VIP is in the subnet of the VIP interface
+  ansible.builtin.assert:
+    that:
+      - tera_vip_address | tera_ipv4_in_network(_lb_ipv4.network ~ '/' ~ _lb_ipv4.netmask)
+    fail_msg: >-
+      tera_vip_address {{ tera_vip_address }} tidak berada di subnet {{ _lb_ipv4.network }}/{{ _lb_ipv4.netmask }}
+      milik {{ _loadbalancer_interface }} di {{ inventory_hostname }}. VIP harus satu subnet dengan node load
+      balancer agar ARP berpindah saat failover. Pilih VIP dari subnet itu.
+    quiet: true
+  vars:
+    _lb_ipv4: "{{ ansible_facts[_loadbalancer_interface | regex_replace('[-.:]', '_')]['ipv4'] }}"
+
+- name: Check stats sources
+  ansible.builtin.assert:
+    that:
+      - haproxy_stats_sources is sequence
+      - haproxy_stats_sources is not string
+      - _lb_bad_sources | length == 0
+    fail_msg: >-
+      haproxy_stats_sources harus list IPv4/CIDR (boleh kosong = hanya node load balancer). Entri tidak valid:
+      {{ _lb_bad_sources }}.
+    quiet: true
+  vars:
+    _lb_bad_sources: >-
+      {{ (haproxy_stats_sources | zip(haproxy_stats_sources | map('tera_is_ipv4_network'))
+          | rejectattr('1') | map(attribute='0') | list)
+         if (haproxy_stats_sources is sequence and haproxy_stats_sources is not string)
+         else [haproxy_stats_sources] }}
+
+- name: Check load balancer passwords are set
+  ansible.builtin.assert:
+    that:
+      - haproxy_stats_password is defined
+      - haproxy_stats_password is string
+      - haproxy_stats_password | length > 0
+      - keepalived_auth_pass is defined
+      - keepalived_auth_pass is string
+      - keepalived_auth_pass | length > 0
+    fail_msg: >-
+      haproxy_stats_password atau keepalived_auth_pass kosong. Jalankan ./tera genpwd -i inventory/<cluster>
+      (lalu ansible-vault encrypt file passwords.yml).
+    quiet: true
+  no_log: true
+
+- name: Warn about a single load balancer
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: group loadbalancer hanya berisi {{ groups['loadbalancer'] | join(', ') }}. VIP tidak punya
+      cadangan: jika node ini mati, VIP ikut hilang. Tambahkan minimal satu node load balancer lagi.
+  when: groups['loadbalancer'] | length == 1
+
+- name: Check the VIP is not used by another host
+  ansible.builtin.include_tasks: vip_check.yml

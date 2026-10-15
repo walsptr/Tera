@@ -1,0 +1,50 @@
+{# HAProxy for the MariaDB Galera VIP (ADR 0004, ADR 0005). The "Managed by Tera" header and the
+   conf.d snippets are added by config.yml. Override: config/haproxy/haproxy.cfg (docs/CUSTOM-CONFIG.md). #}
+global
+    log /dev/log local0
+    maxconn {{ haproxy_maxconn }}
+    user haproxy
+    group haproxy
+
+defaults
+    mode tcp
+    log global
+    option tcplog
+    option dontlognull
+    timeout connect 5s
+    timeout client {{ haproxy_timeout_client }}
+    timeout server {{ haproxy_timeout_server }}
+    timeout check {{ haproxy_timeout_check }}
+
+# Health check: tera-clustercheck answers 200 only when the node is Synced.
+listen mariadb
+    bind {{ tera_vip_address }}:{{ mariadb_port }}
+    option httpchk
+    http-check expect status 200
+{% if mariadb_lb_mode == 'multi_writer' %}
+    balance leastconn
+    default-server port {{ mariadb_clustercheck_port }} inter {{ haproxy_check_inter }} fastinter {{ haproxy_check_fastinter }} fall {{ haproxy_check_fall }} rise {{ haproxy_check_rise }} on-marked-down shutdown-sessions
+{% for host in groups['mariadb'] %}
+    server {{ host }} {{ hostvars[host]['tera_listen_address'] }}:{{ mariadb_port }} check
+{% endfor %}
+{% else %}
+    # single_writer: the first mariadb node takes all traffic, the others are backups in inventory
+    # order. When the writer is back, sessions on the backup are cut so every client returns to the
+    # writer (applications must reconnect).
+    default-server port {{ mariadb_clustercheck_port }} inter {{ haproxy_check_inter }} fastinter {{ haproxy_check_fastinter }} fall {{ haproxy_check_fall }} rise {{ haproxy_check_rise }} on-marked-down shutdown-sessions
+{% for host in groups['mariadb'] %}
+{% if loop.first %}
+    server {{ host }} {{ hostvars[host]['tera_listen_address'] }}:{{ mariadb_port }} check on-marked-up shutdown-backup-sessions
+{% else %}
+    server {{ host }} {{ hostvars[host]['tera_listen_address'] }}:{{ mariadb_port }} check backup
+{% endif %}
+{% endfor %}
+{% endif %}
+
+listen stats
+    bind {{ tera_listen_address }}:{{ haproxy_stats_port }}
+    mode http
+    stats enable
+    stats uri /
+    stats refresh 10s
+    stats auth {{ haproxy_stats_user }}:{{ haproxy_stats_password }}

@@ -1,0 +1,40 @@
+{# Keepalived for the VIP: VRRP unicast, every node BACKUP with nopreempt so the VIP stays where it
+   is when a failed node comes back; priority follows inventory order. The "Managed by Tera" header
+   is added by config.yml. Override: config/keepalived/keepalived.conf (docs/CUSTOM-CONFIG.md). #}
+global_defs {
+    router_id {{ inventory_hostname }}
+}
+
+# The VIP must sit on a node whose HAProxy runs. Native process tracking (no script): keepalived does
+# not execute anything, which also avoids SELinux denials for script checks on RHEL.
+vrrp_track_process track_haproxy {
+    process haproxy
+    quorum 1
+    delay 1
+}
+
+vrrp_instance tera_vip {
+    state BACKUP
+    nopreempt
+    interface {{ _loadbalancer_interface }}
+    virtual_router_id {{ keepalived_virtual_router_id }}
+    priority {{ 150 - groups['loadbalancer'].index(inventory_hostname) }}
+    advert_int {{ keepalived_advert_int }}
+    unicast_src_ip {{ tera_listen_address }}
+    unicast_peer {
+{% for host in groups['loadbalancer'] if host != inventory_hostname %}
+        {{ hostvars[host]['tera_listen_address'] }}
+{% endfor %}
+    }
+    authentication {
+        auth_type PASS
+        # VRRP uses only the first 8 characters.
+        auth_pass {{ keepalived_auth_pass[:8] }}
+    }
+    virtual_ipaddress {
+        {{ tera_vip_address }}/{{ tera_vip_cidr_prefix }} dev {{ _loadbalancer_interface }}
+    }
+    track_process {
+        track_haproxy
+    }
+}

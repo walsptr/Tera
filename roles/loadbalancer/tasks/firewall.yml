@@ -1,0 +1,62 @@
+---
+# firewalld on the load balancer nodes (ADR 0011): only when firewalld already runs, default zone.
+# Owned here: VRRP between load balancers, the stats port, and the client port on load balancers that
+# are not MariaDB nodes (on MariaDB nodes the mariadb role owns it, with the same sources).
+- name: Collect service facts for firewall
+  ansible.builtin.service_facts:
+
+- name: Manage firewalld
+  when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+  block:
+    - name: Compute expected load balancer firewall rules
+      ansible.builtin.set_fact:
+        _lb_fw_manage_client: "{{ inventory_hostname not in groups['mariadb'] }}"
+        _lb_fw_rules: >-
+          {{ (_lb_peers | map('regex_replace', '^(.*)$',
+                              'rule family="ipv4" source address="\1" protocol value="vrrp" accept') | list)
+             + (haproxy_stats_sources | map('tera_fw_rich_rule', haproxy_stats_port ~ '/tcp') | list)
+             + ((mariadb_client_sources | map('tera_fw_rich_rule', mariadb_port ~ '/tcp') | list)
+                if (inventory_hostname not in groups['mariadb'] and '0.0.0.0/0' not in mariadb_client_sources)
+                else []) }}
+        _lb_fw_owned: >-
+          {{ ['protocol value="vrrp"', 'port port="' ~ haproxy_stats_port ~ '"']
+             + (['port port="' ~ mariadb_port ~ '"'] if inventory_hostname not in groups['mariadb'] else []) }}
+      vars:
+        _lb_peers: >-
+          {{ groups['loadbalancer'] | reject('equalto', inventory_hostname)
+             | map('extract', hostvars, 'tera_listen_address') | list }}
+
+    - name: Read current firewalld rules
+      ansible.posix.firewalld_info:
+        active_zones: true
+      register: _lb_fw_info
+      check_mode: false
+
+    - name: Open or close the client port for the whole zone
+      ansible.posix.firewalld:
+        port: "{{ mariadb_port }}/tcp"
+        permanent: true
+        immediate: true
+        state: "{{ 'enabled' if '0.0.0.0/0' in mariadb_client_sources else 'disabled' }}"
+      when: _lb_fw_manage_client | bool
+
+    - name: Remove load balancer rich rules that are no longer expected
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop: >-
+        {{ (_lb_fw_zone.rich_rules | default([]))
+           | select('search', '(' ~ (_lb_fw_owned | map('regex_escape') | join('|')) ~ ')')
+           | reject('in', _lb_fw_rules) | list }}
+      vars:
+        _lb_fw_zone: "{{ _lb_fw_info.firewalld_info.zones[_lb_fw_info.firewalld_info.default_zone] }}"
+
+    - name: Add expected load balancer rich rules
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ _lb_fw_rules }}"

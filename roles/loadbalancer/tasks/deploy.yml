@@ -1,2 +1,33 @@
 ---
-[]
+- name: Run prechecks
+  ansible.builtin.import_tasks: prechecks.yml
+
+- name: Install load balancer
+  ansible.builtin.import_tasks: install.yml
+
+# arping is installed now: repeat the check if prechecks had to skip it.
+- name: Check the VIP is not used by another host
+  ansible.builtin.include_tasks: vip_check.yml
+  when: _loadbalancer_arping.rc | default(0) != 0
+
+- name: Configure SELinux for HAProxy
+  ansible.builtin.include_tasks: selinux.yml
+  when:
+    - ansible_facts['os_family'] == 'RedHat'
+    - (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+
+- name: Open firewall ports
+  ansible.builtin.include_tasks: firewall.yml
+  when: loadbalancer_firewall_manage | bool
+
+- name: Configure HAProxy and Keepalived
+  ansible.builtin.import_tasks: config.yml
+
+- name: Enable and start HAProxy and Keepalived
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - haproxy
+    - keepalived

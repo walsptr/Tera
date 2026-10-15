@@ -1,2 +1,27 @@
 ---
-{}
+# Load balancer role defaults (HAProxy + Keepalived). Values shared with other plays (VIP, VRID,
+# stats port, mariadb_lb_mode, mariadb_client_sources) live in roles/tera_defaults.
+
+# Sources allowed to reach the HAProxy stats page (haproxy_stats_port) when Tera manages firewalld:
+# IPv4/CIDR list. Empty = only the load balancer nodes themselves.
+haproxy_stats_sources: []
+haproxy_stats_user: tera
+# Client and server timeouts; MariaDB closes idle sessions after wait_timeout (28800 s = 8 h).
+haproxy_timeout_client: 8h
+haproxy_timeout_server: 8h
+haproxy_maxconn: 4096
+# Health check against tera-clustercheck. A node that dies without closing connections is only seen
+# through check timeouts: detection takes about inter + fall x (fastinter + timeout_check).
+haproxy_check_inter: 1s
+haproxy_check_fastinter: 500ms
+haproxy_check_fall: 3
+haproxy_check_rise: 2
+haproxy_timeout_check: 1s
+
+# Interface that carries the VIP. Empty = the interface holding tera_listen_address.
+keepalived_interface: ""
+# Seconds between VRRP adverts; a backup takes over after about 3 missed adverts.
+keepalived_advert_int: 1
+
+# Manage firewalld on the load balancer nodes when it runs (ADR 0011). ufw is never managed.
+loadbalancer_firewall_manage: true
