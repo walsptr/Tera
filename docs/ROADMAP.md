@@ -78,14 +78,26 @@ Tag `v0.3.1` (2026-10-15): test tambahan untuk pengaman datadir di node Galera d
 serta tampilan rule di role `loadbalancer`, plus perbaikan CI. Lulus dari VM baru di Ubuntu 24.04 dan Rocky 9
 (`standalone`, `galera`, `loadbalancer`, `destroy`) dan di GitHub Actions.
 
-## Fase 4 — Operasional
+## Fase 4a — Backup & restore
 
-- [ ] Upgrade MariaDB
-- [ ] Backup/restore dengan mariabackup
+Ditutup dengan tag `v0.4.0`.
+
+- [ ] Spike: perilaku mariabackup 11.4 di Galera (desync, flow control, clustercheck/HAProxy)
+- [ ] ADR 0012 (backup) dan ADR 0013 (restore), disetujui sebelum implementasi
+- [ ] Backup full + incremental, metadata, retensi per rantai, verifikasi, systemd timer
+- [ ] Target penyimpanan: lokal + rsync/ssh ke host backup (lapisan target terpisah), gpg untuk salinan remote
+- [ ] Restore standalone dan galera (prechecks ruang disk sebelum service dihentikan)
+- [ ] Molecule `backup` dan `backup-galera`, plus backup/restore di `standalone-podman` (CI)
+
+## Fase 4b — Operasional
+
+- [ ] Upgrade minor rolling (patch dalam satu seri; perpindahan seri ditolak)
+- [ ] Exporter monitoring (`mysqld_exporter`, `node_exporter` opsional)
 - [ ] Scale in
-- [ ] `SET GLOBAL` tanpa restart
-- [ ] Exporter monitoring
-- [ ] Replikasi async (perlu ADR)
+- [ ] `SET GLOBAL` tanpa restart (paling akhir)
+
+Kandidat ADR di luar Fase 4: replikasi async, upgrade major, PITR dari binlog, restore lintas cluster,
+target backup S3/MinIO.
 
 ## Fase 5 — PostgreSQL
 
