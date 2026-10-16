@@ -48,4 +48,5 @@ Keputusan desain Tera dicatat di sini.
 | [0010](0010-firewalld-galera-ports.md) | Tera mengelola firewalld untuk port Galera | Superseded by 0011 |
 | [0011](0011-firewalld-scope-and-sources.md) | Firewalld untuk semua mode, sumber klien, clustercheck hanya dari LB | Supersedes 0010 |
 | [0012](0012-backup-mariabackup.md) | Backup MariaDB dengan mariabackup | Accepted |
-| [0013](0013-restore-mariabackup.md) | Restore dari backup mariabackup | Accepted |
+| [0013](0013-restore-mariabackup.md) | Restore dari backup mariabackup | Accepted (pengiriman: lihat 0014) |
+| [0014](0014-restore-receiver-user.md) | Penerima restore khusus dan kunci sementara ber-TTL | Accepted |

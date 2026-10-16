@@ -1,24 +1,43 @@
 ---
 # tera restore: send the chain from its source (backup host, or the node that took the backups) to
-# the restore node (ADR 0013). The source gets a temporary key that may only write into the staging
-# directory of this restore (root@node, rrsync -wo, from the source address); the node never holds
-# a credential that reads the backup host. Key and authorization are removed in `always`.
-# Requires sshd on the restore node to accept key logins for root (PermitRootLogin prohibit-password,
-# the default on Ubuntu and EL9).
+# the restore node (ADR 0014, replacing the transfer part of ADR 0013). The source gets a temporary key
+# that the restore receiver (mariadb_restore_user, not root) accepts only for
+# `rrsync -wo -no-del <staging>` from the source address, until expiry-time. The node never holds a
+# credential that reads the backup host. Key and authorization are removed in `always`; if the
+# controller is cut off first, the entry expires and the next restore removes it.
 - name: Transfer the backup chain
   vars:
     _src: "{{ _mariadb_restore_src_host }}"
     _src_address: "{{ hostvars[_mariadb_restore_src_host]['tera_listen_address'] }}"
     _incoming: "{{ mariadb_backup_dir }}/.incoming/{{ _mariadb_restore_id }}"
     _comment: tera-restore-{{ _mariadb_restore_id }}
+    _keys: /var/lib/{{ mariadb_restore_user }}/.ssh/authorized_keys
+    _ssh: >-
+      ssh -i {{ _mariadb_restore_xfer.path | default('') }}/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes
+      -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _mariadb_restore_xfer.path | default('') }}/known_hosts
   block:
-    - name: Create the staging directory
+    - name: Create the staging directory for the restore receiver
       ansible.builtin.file:
         path: "{{ _incoming }}"
         state: directory
-        owner: root
-        group: root
+        owner: "{{ mariadb_restore_user }}"
+        group: "{{ mariadb_restore_user }}"
         mode: "0700"
+
+    - name: Remove temporary keys left by earlier restores
+      ansible.builtin.lineinfile:
+        path: "{{ _keys }}"
+        regexp: " tera-restore-[0-9TZ]+$"
+        state: absent
+      failed_when: false
+
+    # Local time of the restore node, no "Z" suffix: sshd reads expiry-time in the system time zone, and
+    # OpenSSH 8.9 (Ubuntu 22.04) rejects the whole key line when the time has a "Z" (UTC) suffix.
+    - name: Compute the key expiry (restore node local time)
+      ansible.builtin.command:
+        cmd: date -d '+{{ mariadb_restore_key_ttl | int }} seconds' +%Y%m%d%H%M%S
+      register: _mariadb_restore_expiry
+      changed_when: false
 
     - name: Create a temporary directory on the source
       ansible.builtin.tempfile:
@@ -51,23 +70,43 @@
         mode: "0600"
       delegate_to: "{{ _src }}"
 
-    - name: Authorize the temporary key (write only, staging directory only)
+    - name: Authorize the temporary key (write only, staging only, from the source, expiring)
       ansible.posix.authorized_key:
-        user: root
+        user: "{{ mariadb_restore_user }}"
         key: "{{ _mariadb_restore_xfer_pub.content | b64decode | trim }}"
-        key_options: 'command="/usr/bin/rrsync -wo {{ _incoming }}",restrict,from="{{ _src_address }}"'
+        key_options: >-
+          command="/usr/bin/rrsync -wo -no-del {{ _incoming }}",restrict,from="{{ _src_address }}",expiry-time="{{ _mariadb_restore_expiry.stdout }}"
         state: present
+
+    # rrsync refuses a plain command after a successful login (exit 1); 255 = no connection or login.
+    - name: Check the source can log in as the restore receiver
+      ansible.builtin.command:
+        cmd: "{{ _ssh }} {{ mariadb_restore_user }}@{{ tera_listen_address }} true"
+      delegate_to: "{{ _src }}"
+      register: _mariadb_restore_login
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse when the source cannot log in
+      ansible.builtin.assert:
+        that:
+          - _mariadb_restore_login.rc != 255
+        fail_msg: >-
+          {{ _src }} tidak bisa login ke {{ mariadb_restore_user }}@{{ inventory_hostname }} ({{ tera_listen_address }}:22):
+          {{ _mariadb_restore_login.stderr | trim }}. Pastikan {{ _src }} bisa menjangkau port 22 node ini dan sshd
+          mengizinkan user {{ mariadb_restore_user }} (AllowUsers/AllowGroups/Match). Alternatif: salin rantai ke
+          {{ mariadb_backup_dir }}/{{ tera_cluster_name }}/ di node ini dan jalankan restore dengan
+          -e mariadb_restore_source=local -e mariadb_restore_source_host={{ inventory_hostname }}.
+        quiet: true
 
     - name: Send the chain
       ansible.builtin.command:
         argv: >-
-          {{ ['rsync', '-rtR', '--exclude', 'mariabackup.log', '--exclude', '.pushed-*', '-e',
-              'ssh -i ' ~ _mariadb_restore_xfer.path ~ '/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes'
-              ~ ' -o StrictHostKeyChecking=yes -o UserKnownHostsFile=' ~ _mariadb_restore_xfer.path ~ '/known_hosts']
+          {{ ['rsync', '-rtR', '--exclude', 'mariabackup.log', '--exclude', '.pushed-*', '-e', _ssh]
              + (_mariadb_restore_chain.backups | map(attribute='path')
                 | map('regex_replace', '^' ~ (_mariadb_restore_src_root | regex_escape) ~ '/', _mariadb_restore_src_root ~ '/./')
                 | map('regex_replace', '$', '/') | list)
-             + ['root@' ~ tera_listen_address ~ ':'] }}
+             + [mariadb_restore_user ~ '@' ~ tera_listen_address ~ ':'] }}
       delegate_to: "{{ _src }}"
       register: _mariadb_restore_rsync
       changed_when: true
@@ -79,16 +118,13 @@
           - _mariadb_restore_rsync.rc == 0
         fail_msg: >-
           Mengirim backup dari {{ _src }} ke {{ inventory_hostname }} gagal (rc={{ _mariadb_restore_rsync.rc }}):
-          {{ _mariadb_restore_rsync.stderr | trim }}. Pastikan {{ _src }} bisa SSH ke {{ tera_listen_address }}:22 dan sshd
-          {{ inventory_hostname }} mengizinkan login kunci untuk root (PermitRootLogin prohibit-password). Alternatif: salin
-          rantai ke {{ mariadb_backup_dir }}/{{ tera_cluster_name }}/ di node ini dan jalankan restore dengan
-          -e mariadb_restore_source=local -e mariadb_restore_source_host={{ inventory_hostname }}.
+          {{ _mariadb_restore_rsync.stderr | trim }}.
         quiet: true
 
   always:
     - name: Remove the temporary authorization
       ansible.posix.authorized_key:
-        user: root
+        user: "{{ mariadb_restore_user }}"
         key: "{{ _mariadb_restore_xfer_pub.content | b64decode | trim }}"
         state: absent
       when: _mariadb_restore_xfer_pub.content is defined

@@ -1,6 +1,6 @@
 # 0013. Restore dari backup mariabackup
 
-- **Status:** Accepted
+- **Status:** Accepted; bagian "Pengiriman backup ke node restore" digantikan ADR 0014
 - **Tanggal:** 2026-10-16
 
 ## Konteks
@@ -45,6 +45,9 @@ remote, sehingga data dikirim dari host backup ke node, diorkestrasi controller.
   di akhir, juga saat gagal.
 
 ### Pengiriman backup ke node restore
+
+> Digantikan ADR 0014 (penerima `tera-restore`, `-no-del`, `expiry-time`, cek dini). Teks di bawah adalah
+> keputusan awal.
 
 Kredensial permanen node hanya bisa menulis ke host backup (ADR 0012). Untuk restore, controller
 mengorkestrasi pengiriman **dari** host backup **ke** node restore:

@@ -18,7 +18,7 @@
 - name: Show what happens to backups
   ansible.builtin.debug:
     msg: >-
-      {{ inventory_hostname }}: timer, unit, script, dan {{ tera_state_dir }}/backup dihapus. Backup di
+      {{ inventory_hostname }}: timer, unit, script, user {{ mariadb_restore_user }}, dan {{ tera_state_dir }}/backup dihapus. Backup di
       {{ mariadb_backup_dir }} ({{ _mariadb_backup_destroy_chains.matched }} rantai) TIDAK dihapus; hapus manual
       jika memang tidak dibutuhkan lagi.
 
@@ -34,3 +34,9 @@
     - /usr/local/lib/tera/backup-targets
     - "{{ tera_state_dir }}/backup"
     - "{{ tera_state_dir }}/mariadb-backup.status"
+
+- name: Remove the restore receiver user
+  ansible.builtin.user:
+    name: "{{ mariadb_restore_user }}"
+    state: absent
+    remove: true

@@ -130,9 +130,6 @@
       register: _se_list
       changed_when: false
 
-    - name: Show the galera position recorded by the full
-      ansible.builtin.debug:
-        msg: "galera_position: {{ (_se_list.stdout | from_json)[0].backups[0].meta.galera_position }}"
 
     - name: Assert a galera chain taken on db03
       ansible.builtin.assert:
@@ -141,6 +138,7 @@
           - _chains[0].backups | length == 2
           - _chains[0].backups[0].meta.mode == 'galera'
           - _chains[0].backups[0].meta.host == 'db03'
+          - "'galera_position' not in _chains[0].backups[0].meta"
       vars:
         _chains: "{{ _se_list.stdout | from_json }}"
 

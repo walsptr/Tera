@@ -218,8 +218,11 @@ gpg --armor --export backup@example.com > inventory/prod-b/config/backup/backup.
   `-e mariadb_restore_allow_mode_change=true`.
 - Datadir lama di node restore dipindahkan ke `/var/lib/mysql.pre-restore-<id>` dan **tidak** dihapus otomatis.
   Setelah aplikasi diverifikasi: `sudo rm -rf /var/lib/mysql.pre-restore-<id>`.
-- Restore dari host backup mengirim data langsung dari host backup ke node dengan kunci sementara; sshd node
-  restore harus menerima login kunci untuk root (`PermitRootLogin prohibit-password`, default Ubuntu/EL9).
+- Restore dari host backup (atau dari node backup lain) mengirim data langsung ke node restore dengan kunci
+  sementara milik user `tera-restore`: hanya boleh menulis ke direktori staging restore itu, dari alamat sumber,
+  dan kedaluwarsa setelah 2 jam (`mariadb_restore_key_ttl`). Login root lewat SSH tidak dibutuhkan, tetapi sshd
+  node harus mengizinkan user `tera-restore` (periksa `AllowUsers`/`AllowGroups`). Jika tidak, restore gagal
+  sebelum MariaDB dihentikan dengan pesan yang menjelaskan penyebabnya.
 
 ## Destroy
 

@@ -59,8 +59,7 @@ setelah full dengan prioritas rendah.
 Wajib di setiap backup, agar restore lintas cluster bisa ditambahkan nanti tanpa mengubah format:
 `format_version` (1), `cluster` (`tera_cluster_name`), `mode` (`standalone`/`galera`), `host`, `type`
 (`full`/`incremental`), `chain_id`, `sequence`, `parent` (backup sebelumnya di rantai), `started_at` dan
-`finished_at` (UTC), `mariadb_version` (dari `mariadb_backup_info`), `from_lsn`/`to_lsn`, `galera_position`
-(`uuid:seqno` atau `null`), `compression` (`zstd`), `encrypted` + `gpg_fingerprint`, `size_bytes`,
+`finished_at` (UTC), `mariadb_version` (dari `mariadb_backup_info`), `from_lsn`/`to_lsn`, `compression` (`zstd`), `encrypted` + `gpg_fingerprint`, `size_bytes`,
 `sha256`, `datadir_size_bytes` (ukuran datadir saat backup; dasar prechecks ruang disk restore).
 
 - Variabel global baru `tera_cluster_name` (default nama folder inventory), dan
@@ -168,7 +167,7 @@ Wajib di setiap backup, agar restore lintas cluster bisa ditambahkan nanti tanpa
   - unit `tera-backup-verify.service` dengan `Nice=19`, `IOSchedulingClass=idle`, dan
     `MemoryMax={{ mariadb_backup_verify_memory_max }}` (default `1G`);
   - bongkar stream ke `<mariadb_backup_dir>/.verify/`, prepare full lalu incremental berurutan, nyalakan
-    `mariadbd --no-defaults --skip-networking --user=root --socket=<tmp>`, cek bahwa setiap tabel bisa dibuka dan
+    `mariadbd --no-defaults --skip-networking --user=mysql --socket=<tmp>`, cek bahwa setiap tabel bisa dibuka dan
     `CHECK TABLE` lulus, lalu hapus direktori sementara;
   - jika ruang sementara tidak cukup, verifikasi dilewati dengan status `warning` (backup tidak dibatalkan);
   - backup lokal terenkripsi (`mariadb_backup_encrypt_local: true`) tidak bisa diverifikasi otomatis karena
@@ -232,3 +231,5 @@ Wajib di setiap backup, agar restore lintas cluster bisa ditambahkan nanti tanpa
   tidak perlu dibuka untuk user `mysql`; `galera_position` bernilai `null`, karena mariabackup
   11.4 tidak menulis `mariadb_backup_galera_info` ke `--extra-lsndir` (file itu tetap ada di dalam stream; restore
   tidak membutuhkannya karena membuat cluster dengan UUID baru).
+- 2026-10-16: field `galera_position` dihapus dari metadata (selalu `null` dengan mariabackup 11.4; restore tidak
+  memakainya). `format_version` tetap 1. `mariadbd` sementara verifikasi berjalan sebagai `mysql` (ADR 0014).

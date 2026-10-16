@@ -11,7 +11,10 @@
 #    markers right, timers back, next backup is a full;
 # 8. remote restore: refused without the private key (MariaDB untouched), the first full with the key;
 #    no temporary key or keyring left;
-# 9. retention keeps 2 chains on db01 and on bk01.
+# 9. retention keeps 2 chains on db01 and on bk01;
+# ADR 0014: the throwaway mariadbd runs as mysql; the restore receiver tera-restore honours expiry-time,
+# -no-del and the staging directory; a remote restore that fails after the temporary key was authorized
+# leaves no key; remote restore works with PermitRootLogin no.
 - name: Backups off
   hosts: localhost
   connection: local
@@ -156,6 +159,7 @@
           - _meta.datadir_size_bytes | int > 0
           - _meta.mariadb_version is match('^11\\.4\\.')
           - _chains[0].backups[1].meta.from_lsn == _meta.to_lsn
+          - "'galera_position' not in _meta"
       vars:
         _chains: "{{ _se_list.stdout | from_json }}"
         _meta: "{{ (_se_list.stdout | from_json)[0].backups[0].meta }}"
@@ -189,6 +193,55 @@
         fail_msg: "{{ _status | to_json }}"
       vars:
         _status: "{{ _se_status.stdout | from_json }}"
+
+- name: Watch mariadbd processes during a verification
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Start a process watcher
+      ansible.builtin.command:
+        cmd: >-
+          systemd-run --unit tera-test-ps /bin/bash -c
+          'while true; do ps -o user=,args= -C mariadbd >> /root/tera-ps.log; sleep 0.2; done'
+      changed_when: true
+
+- name: Run tera backup-verify
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run backup-verify
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-backup.yml
+          args: [-e, tera_backup_op=verify]
+          expect_success: true
+
+- name: Check the throwaway mariadbd ran as mysql
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop the process watcher
+      ansible.builtin.systemd_service:
+        name: tera-test-ps
+        state: stopped
+
+    - name: Read the process log
+      ansible.builtin.slurp:
+        src: /root/tera-ps.log
+      register: _se_ps
+
+    - name: Assert the throwaway server was seen, never as root
+      ansible.builtin.assert:
+        that:
+          - _throwaway | length > 0
+          - _throwaway | map('split') | map('first') | unique | list == ['mysql']
+        fail_msg: "{{ _throwaway | unique | list }}"
+      vars:
+        _throwaway: "{{ (_se_ps.content | b64decode).splitlines() | select('search', '--no-defaults') | list }}"
 
 - name: Check the copies on the backup host
   hosts: bk01
@@ -244,12 +297,13 @@
     - name: Try to list, read, delete and escape # noqa: command-instead-of-shell
       ansible.builtin.shell:
         cmd: "{{ item }}"
+      # Quoted: an unquoted item ending in ":" is a YAML mapping, not a command.
       loop:
-        - rsync -e "{{ _ssh }}" {{ _dest }}:
-        - rsync -r -e "{{ _ssh }}" {{ _dest }}:{{ _se_chain1 }} /tmp/tera-steal
-        - mkdir -p /tmp/tera-empty && rsync -r --delete -e "{{ _ssh }}" /tmp/tera-empty/ {{ _dest }}:{{ _se_chain1 }}/
-        - "{{ _ssh }} {{ _dest }} id"
-        - rsync -e "{{ _ssh }}" /etc/hostname {{ _dest }}:../../escape
+        - 'rsync -e "{{ _ssh }}" {{ _dest }}:'
+        - 'rsync -r -e "{{ _ssh }}" {{ _dest }}:{{ _se_chain1 }} /tmp/tera-steal'
+        - 'mkdir -p /tmp/tera-empty && rsync -r --delete -e "{{ _ssh }}" /tmp/tera-empty/ {{ _dest }}:{{ _se_chain1 }}/'
+        - '{{ _ssh }} {{ _dest }} id'
+        - 'rsync -e "{{ _ssh }}" /etc/hostname {{ _dest }}:../../escape'
       register: _se_steal
       changed_when: false
       failed_when: false
@@ -259,11 +313,18 @@
         path: /tmp/tera-steal
       register: _se_stolen
 
-    - name: Assert every attempt was refused
+    # rc alone is not enough: a broken command also fails. Each refusal must come from rrsync.
+    - name: Assert every attempt was refused by rrsync
       ansible.builtin.assert:
         that:
           - _se_steal.results | rejectattr('rc', 'ne', 0) | list | length == 0
+          - _se_steal.results[0].stderr is search('reading from write-only server is not allowed')
+          - _se_steal.results[1].stderr is search('reading from write-only server is not allowed')
+          - _se_steal.results[2].stderr is search('option --delete has been disabled')
+          - _se_steal.results[3].stderr is search('does not run rsync')
+          - _se_steal.results[4].stderr is search('do not use \.\. in arg')
           - not _se_stolen.stat.exists
+        fail_msg: "{{ _se_steal.results | map(attribute='stderr') | join(' | ') }}"
 
 - name: Check the backup host still holds everything
   hosts: bk01
@@ -599,6 +660,205 @@
         cmd: /usr/local/sbin/tera-backup push
       changed_when: true
 
+- name: Prepare a receiver test entry on db01
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Create a test staging directory
+      ansible.builtin.file:
+        path: "{{ mariadb_backup_dir }}/.incoming/test"
+        state: directory
+        owner: "{{ mariadb_restore_user }}"
+        mode: "0700"
+
+    - name: Put a file there that must survive --delete
+      ansible.builtin.copy:
+        content: "keep\n"
+        dest: "{{ mariadb_backup_dir }}/.incoming/test/keep"
+        owner: "{{ mariadb_restore_user }}"
+        mode: "0600"
+
+    - name: Compute a future expiry
+      ansible.builtin.command:
+        cmd: date -d '+1 hour' +%Y%m%d%H%M%S
+      register: _se_future
+      changed_when: false
+
+- name: Create a test key on bk01
+  hosts: bk01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Generate the test key
+      ansible.builtin.command:
+        cmd: ssh-keygen -q -t ed25519 -N '' -C tera-test -f /root/tera-test-key
+        creates: /root/tera-test-key
+
+    - name: Read the test public key
+      ansible.builtin.slurp:
+        src: /root/tera-test-key.pub
+      register: _se_test_pub
+
+    - name: Trust db01 host key for the test
+      ansible.builtin.shell:
+        cmd: ssh-keyscan -t ed25519 {{ hostvars['db01']['_se_address'] }} > /root/tera-test-known 2>/dev/null
+      changed_when: true
+
+- name: Expired entry is refused
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Authorize the test key with an expiry in the past
+      ansible.posix.authorized_key:
+        user: "{{ mariadb_restore_user }}"
+        key: "{{ hostvars['bk01']['_se_test_pub'].content | b64decode | trim }}"
+        key_options: 'command="/usr/bin/rrsync -wo -no-del {{ _dir }}",restrict,from="{{ _from }}",expiry-time="{{ _expiry }}"'
+        state: present
+      vars:
+        _dir: "{{ mariadb_backup_dir }}/.incoming/test"
+        _from: "{{ hostvars['bk01']['_se_address'] }}"
+        _expiry: "20200101000000"
+
+- name: Try the expired entry
+  hosts: bk01
+  become: true
+  gather_facts: false
+  vars:
+    _ssh: ssh -i /root/tera-test-key -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/root/tera-test-known
+  tasks:
+    - name: Log in with the expired entry
+      ansible.builtin.command:
+        cmd: "{{ _ssh }} tera-restore@{{ hostvars['db01']['_se_address'] }} true"
+      register: _se_expired
+      changed_when: false
+      failed_when: false
+
+    - name: Assert the login was refused
+      ansible.builtin.assert:
+        that:
+          - _se_expired.rc == 255
+
+- name: Valid entry is limited
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Authorize the test key until the future expiry
+      ansible.posix.authorized_key:
+        user: "{{ mariadb_restore_user }}"
+        key: "{{ hostvars['bk01']['_se_test_pub'].content | b64decode | trim }}"
+        key_options: 'command="/usr/bin/rrsync -wo -no-del {{ _dir }}",restrict,from="{{ _from }}",expiry-time="{{ _expiry }}"'
+        state: present
+      vars:
+        _dir: "{{ mariadb_backup_dir }}/.incoming/test"
+        _from: "{{ hostvars['bk01']['_se_address'] }}"
+        _expiry: "{{ _se_future.stdout }}"
+
+- name: Try the valid entry
+  hosts: bk01
+  become: true
+  gather_facts: false
+  vars:
+    _ssh: ssh -i /root/tera-test-key -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/root/tera-test-known
+    _dest: tera-restore@{{ hostvars['db01']['_se_address'] }}
+  tasks:
+    # Shell: each attempt is a command line with a quoted ssh command.
+    - name: Write, delete, escape and read through the entry # noqa: command-instead-of-shell
+      ansible.builtin.shell:
+        cmd: "{{ item }}"
+      # Quoted: an unquoted item ending in ":" is a YAML mapping, not a command.
+      loop:
+        - 'echo hello > /root/tera-test-file && rsync -e "{{ _ssh }}" /root/tera-test-file {{ _dest }}:'
+        - 'mkdir -p /root/tera-test-empty && rsync -r --delete -e "{{ _ssh }}" /root/tera-test-empty/ {{ _dest }}:'
+        - 'rsync -e "{{ _ssh }}" /root/tera-test-file {{ _dest }}:../escape'
+        - 'rsync -e "{{ _ssh }}" {{ _dest }}:keep /root/tera-test-stolen'
+      register: _se_receiver
+      changed_when: false
+      failed_when: false
+
+    - name: Assert only the plain write worked, the rest refused by rrsync
+      ansible.builtin.assert:
+        that:
+          - _se_receiver.results[0].rc == 0
+          - _se_receiver.results[1].stderr is search('option --delete has been disabled')
+          - _se_receiver.results[2].stderr is search('do not use \.\. in arg')
+          - _se_receiver.results[3].stderr is search('reading from write-only server is not allowed')
+        fail_msg: "{{ _se_receiver.results | map(attribute='stderr') | join(' | ') }}"
+
+- name: Check the staging directory and clean up the test entry
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: List the test staging directory
+      ansible.builtin.find:
+        paths: "{{ mariadb_backup_dir }}/.incoming/test"
+      register: _se_staging
+
+    - name: Look for the escaped file
+      ansible.builtin.stat:
+        path: "{{ mariadb_backup_dir }}/.incoming/escape"
+      register: _se_escaped
+
+    - name: Assert the write landed, nothing was deleted, nothing escaped
+      ansible.builtin.assert:
+        that:
+          - _se_staging.files | map(attribute='path') | map('basename') | sort | list == ['keep', 'tera-test-file']
+          - not _se_escaped.stat.exists
+
+    - name: Remove the test entry and directory
+      ansible.builtin.lineinfile:
+        path: /var/lib/{{ mariadb_restore_user }}/.ssh/authorized_keys
+        regexp: " tera-test$"
+        state: absent
+
+    - name: Remove the test staging directory
+      ansible.builtin.file:
+        path: "{{ mariadb_backup_dir }}/.incoming/test"
+        state: absent
+
+    - name: Forbid root logins over SSH on db01
+      ansible.builtin.copy:
+        content: "PermitRootLogin no\n"
+        dest: /etc/ssh/sshd_config.d/00-tera-test.conf
+        mode: "0644"
+
+    # Reload only an active unit (ssh on Ubuntu, sshd on EL9): the systemd module would start an inactive
+    # one, and with socket activation (Ubuntu 24.04) each connection reads the config anyway.
+    - name: Reload sshd if it runs # noqa: command-instead-of-module
+      ansible.builtin.shell:
+        cmd: for u in ssh sshd; do systemctl is-active --quiet $u && systemctl reload $u; done; true
+      changed_when: true
+
+    - name: Read the effective sshd setting
+      ansible.builtin.command:
+        cmd: sshd -T
+      register: _se_sshd
+      changed_when: false
+
+    - name: Assert root logins are forbidden
+      ansible.builtin.assert:
+        that:
+          - "'permitrootlogin no' in _se_sshd.stdout_lines"
+
+    - name: Block SSH from bk01 to db01 (a restore that fails after the key is authorized)
+      ansible.builtin.shell:
+        cmd: >-
+          nft add table inet tera_test &&
+          nft add chain inet tera_test input '{ type filter hook input priority -10 ; }' &&
+          nft add rule inet tera_test input ip saddr {{ hostvars['bk01']['_se_address'] }} tcp dport 22 drop
+      changed_when: true
+
 - name: Restore from the backup host
   hosts: localhost
   connection: local
@@ -619,6 +879,49 @@
       delegate_to: db01
       become: true
       register: _se_remote_before
+
+    - name: Run remote restore while bk01 cannot reach db01
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-restore.yml
+          args: [-e, tera_restore_confirm=true, -e, "mariadb_restore_backup={{ hostvars['db01']['_se_chain1'] }}/0",
+                 -e, mariadb_restore_source=bk, -e, "mariadb_restore_gpg_private_key={{ _eph }}/backup.key.asc"]
+          expect: "tidak bisa login ke tera-restore@db01"
+          expect_also: "MariaDB tidak dihentikan"
+
+    - name: Check no temporary key was left and nothing changed
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail; (grep -c tera-restore- /var/lib/tera-restore/.ssh/authorized_keys || true);
+          (test -e /etc/tera/mariadb-restore.active && echo marker || echo nomarker);
+          systemctl is-active tera-backup-full.timer
+        executable: /bin/bash
+      delegate_to: db01
+      become: true
+      register: _se_blocked
+      changed_when: false
+
+    - name: Unblock SSH from bk01
+      ansible.builtin.command:
+        cmd: nft delete table inet tera_test
+      delegate_to: db01
+      become: true
+      changed_when: true
+
+    - name: Read MariaDB start time after the blocked restore
+      ansible.builtin.systemd_service:
+        name: mariadb
+      delegate_to: db01
+      become: true
+      register: _se_blocked_started
+
+    - name: Assert key removed, MariaDB untouched, backups resumed
+      ansible.builtin.assert:
+        that:
+          - _se_blocked.stdout_lines == ['0', 'nomarker', 'active']
+          - _se_blocked_started.status.ActiveEnterTimestampMonotonic == _se_remote_before.status.ActiveEnterTimestampMonotonic
+        fail_msg: "{{ _se_blocked.stdout_lines }}"
 
     - name: Run remote restore without the private key
       ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
@@ -664,7 +967,7 @@
     - name: Look for temporary keys and keyrings
       ansible.builtin.shell:
         cmd: >-
-          set -o pipefail; (grep -c tera-restore /root/.ssh/authorized_keys || true);
+          set -o pipefail; (grep -c tera-restore- /var/lib/tera-restore/.ssh/authorized_keys || true);
           (find /tmp -maxdepth 1 -name 'tera-gpg.*' | wc -l)
         executable: /bin/bash
       register: _se_leftovers

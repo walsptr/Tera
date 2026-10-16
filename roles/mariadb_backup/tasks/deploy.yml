@@ -12,6 +12,17 @@
     name: "{{ _mariadb_backup_packages }}"
     state: present
 
+# ADR 0014: the throwaway mariadbd (user mysql) and the restore receiver must traverse the backup
+# directory, never list it; chains inside stay 0700 root. The default parent is managed too.
+- name: Create the default backup parent directory
+  ansible.builtin.file:
+    path: /var/backups/tera
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+  when: (mariadb_backup_dir | dirname) == '/var/backups/tera'
+
 - name: Create backup directories
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -20,11 +31,41 @@
     group: root
     mode: "{{ item.mode }}"
   loop:
-    - {path: "{{ mariadb_backup_dir }}", mode: "0700"}
+    - {path: "{{ mariadb_backup_dir }}", mode: "0711"}
+    - {path: "{{ mariadb_backup_dir }}/.incoming", mode: "0711"}
+    - {path: "{{ mariadb_backup_dir }}/.restore", mode: "0711"}
+    - {path: "{{ mariadb_backup_dir }}/.verify", mode: "0711"}
     - {path: "{{ tera_state_dir }}/backup", mode: "0700"}
     - {path: /usr/local/lib/tera/backup-targets, mode: "0755"}
   loop_control:
     label: "{{ item.path }}"
+
+- name: Check the backup parent directory can be traversed
+  ansible.builtin.stat:
+    path: "{{ mariadb_backup_dir | dirname }}"
+  register: _mariadb_backup_parent
+
+- name: Refuse a backup parent directory that cannot be traversed
+  ansible.builtin.assert:
+    that:
+      - (_mariadb_backup_parent.stat.mode | int(base=8)) % 2 == 1
+    fail_msg: >-
+      {{ mariadb_backup_dir | dirname }} (induk mariadb_backup_dir) tidak bisa dilewati user lain (mode
+      {{ _mariadb_backup_parent.stat.mode }}). mariadbd sementara (user mysql) dan penerima restore
+      ({{ mariadb_restore_user }}) harus bisa melewatinya (ADR 0014). Set bit x untuk others, mis.
+      chmod o+x {{ mariadb_backup_dir | dirname }}, atau pilih mariadb_backup_dir lain.
+    quiet: true
+  when: not ansible_check_mode
+
+# ADR 0014: receives restore transfers; its authorized_keys only holds temporary, expiring entries.
+- name: Create the restore receiver user
+  ansible.builtin.user:
+    name: "{{ mariadb_restore_user }}"
+    system: true
+    home: /var/lib/{{ mariadb_restore_user }}
+    create_home: true
+    shell: /bin/sh
+    password: "!"
 
 # The throwaway mariadbd of verify and restore runs on unpacked copies below these directories.
 - name: Label verify and restore directories for mysqld (SELinux)

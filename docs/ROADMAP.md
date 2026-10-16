@@ -99,8 +99,9 @@ serta restore lintas cluster menunggu ADR.
 
 ## Fase 4b — Operasional
 
-- [ ] Kecil: `mariadbd` sementara untuk verifikasi/restore berjalan sebagai user `mysql`, bukan root (perbaiki izin direktori kerja)
-- [ ] Kecil: field `galera_position` di metadata backup: hapus, atau dokumentasikan bahwa selalu `null`
+- [x] Penerima restore khusus `tera-restore` dan kunci sementara ber-TTL (ADR 0014; Molecule `backup` Ubuntu 22.04/24.04 dan Rocky 9, `backup-galera` Ubuntu 24.04 dan Rocky 9)
+- [x] Kecil: `mariadbd` sementara untuk verifikasi/restore berjalan sebagai user `mysql`, bukan root (perbaiki izin direktori kerja)
+- [x] Kecil: field `galera_position` dihapus dari metadata backup (`format_version` tetap 1)
 - [ ] Upgrade minor rolling (patch dalam satu seri; perpindahan seri ditolak)
 - [ ] Exporter monitoring (`mysqld_exporter`, `node_exporter` opsional)
 - [ ] Scale in

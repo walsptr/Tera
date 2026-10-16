@@ -60,15 +60,35 @@
         path: "{{ item }}"
       loop:
         - "{{ mariadb_backup_dir }}"
+        - "{{ mariadb_backup_dir }}/.incoming"
+        - "{{ mariadb_backup_dir }}/.verify"
         - /etc/tera/backup
         - /etc/tera/backup/id_ed25519
       register: _verify_modes
 
-    - name: Assert root-only modes
+    - name: "Assert modes (ADR 0014: backup directories traverse-only, secrets root-only)"
       ansible.builtin.assert:
         that:
-          - _verify_modes.results | map(attribute='stat') | map(attribute='mode') | list == ['0700', '0700', '0600']
+          - _verify_modes.results | map(attribute='stat') | map(attribute='mode') | list == ['0711', '0711', '0711', '0700', '0600']
           - _verify_modes.results | map(attribute='stat') | map(attribute='pw_name') | unique | list == ['root']
+
+    - name: Read the restore receiver account
+      ansible.builtin.getent:
+        database: shadow
+        key: "{{ mariadb_restore_user }}"
+
+    - name: Read the receiver authorized_keys
+      ansible.builtin.shell:
+        cmd: set -o pipefail; grep -c tera-restore- /var/lib/{{ mariadb_restore_user }}/.ssh/authorized_keys || true
+        executable: /bin/bash
+      register: _verify_receiver_keys
+      changed_when: false
+
+    - name: Assert a locked receiver without temporary keys
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['getent_shadow'][mariadb_restore_user][0] is match('^!')
+          - _verify_receiver_keys.stdout | trim == '0'
 
 - name: Verify the backup host
   hosts: bk01

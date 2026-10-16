@@ -146,6 +146,7 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `mariadb_backup_targets` | `[]` (`[{name, type: rsync, host, port}]`; host di group `mariadb_backup_target`) |
 | `mariadb_backup_lock` / `mariadb_backup_lock_timeout` | `/run/lock/tera-mariadb-backup.lock` / `7200` (rolling restart dan restore menunggu backup) |
 | `mariadb_backup_target_dir` / `mariadb_backup_target_user` | `/srv/tera-backup` / `tera-backup` |
+| `mariadb_restore_user` / `mariadb_restore_key_ttl` | `tera-restore` / `7200` (penerima restore dan umur kunci sementara, ADR 0014) |
 | `tera_network_interface` | `""` |
 | `mariadb_cluster_mode` | `standalone` |
 | `mariadb_version` | `"11.4"` |
@@ -296,7 +297,7 @@ di deploy, reconfigure, dan destroy, untuk role `mariadb` maupun `loadbalancer`.
 | HAProxy | `/etc/haproxy/haproxy.cfg` (`0640 root:haproxy`, berisi password stats) |
 | Keepalived | `/etc/keepalived/keepalived.conf` (`0640 root:root`, berisi `auth_pass`) |
 | Sysctl load balancer | `/etc/sysctl.d/90-tera-loadbalancer.conf` (`net.ipv4.ip_nonlocal_bind = 1`) |
-| Backup (semua node MariaDB) | `/usr/local/sbin/tera-backup`, `/usr/local/lib/tera/backup-targets/rsync`, `/etc/tera/backup/config.json` (`0600 root`), `mariadb_backup_dir` (`0700 root`) |
+| Backup (semua node MariaDB) | `/usr/local/sbin/tera-backup`, `/usr/local/lib/tera/backup-targets/rsync`, `/etc/tera/backup/config.json` (`0600 root`); `mariadb_backup_dir`, `.incoming/`, `.restore/`, `.verify/` `0711 root` (bisa dilewati, tidak bisa didaftar; isi rantai `0700 root`; induk default `/var/backups/tera` `0711`); user `tera-restore` (password terkunci, home `/var/lib/tera-restore`, `authorized_keys` hanya berisi entri sementara selama restore) |
 | Backup (node backup) | unit `tera-backup@.service`, `tera-backup-{full,incremental}.timer`, `tera-backup-verify.service`; kunci SSH `/etc/tera/backup/id_ed25519`, `known_hosts`, keyring public key `/etc/tera/backup/gnupg`, status `/etc/tera/mariadb-backup.status` (JSON, kontrak untuk exporter Fase 4b) |
 | Host backup | user `tera-backup`, `mariadb_backup_target_dir/<cluster>/<node>/`, state verifikasi `/var/lib/tera-backup-target/state/` (di luar jangkauan node), `/etc/tera/backup-target/<cluster>.json`, `tera-backup-target.{service,timer}` |
 

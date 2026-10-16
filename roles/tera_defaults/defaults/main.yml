@@ -96,6 +96,10 @@ mariadb_backup_lock: /run/lock/tera-mariadb-backup.lock
 mariadb_backup_lock_timeout: 7200
 # Written by tera restore on every node; backups refuse to run while it exists.
 mariadb_restore_marker: "{{ tera_state_dir }}/mariadb-restore.active"
+# Receiver of restore transfers on every mariadb node (ADR 0014): a locked system user that owns the
+# staging directory. Its temporary key expires after mariadb_restore_key_ttl seconds.
+mariadb_restore_user: tera-restore
+mariadb_restore_key_ttl: 7200
 # Backup host (role backup_target): directory and the user the nodes write as (rrsync -wo -no-del).
 mariadb_backup_target_dir: /srv/tera-backup
 mariadb_backup_target_user: tera-backup

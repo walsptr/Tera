@@ -428,12 +428,6 @@ class Node:
                     f"from_lsn {checkpoints['from_lsn']} tidak sama dengan to_lsn parent "
                     f"{parent_to}"
                 )
-        galera_position = None
-        galera_info = os.path.join(work, "lsn", "mariadb_backup_galera_info")
-        if os.path.isfile(galera_info):
-            with open(galera_info, encoding="utf-8") as fh:
-                galera_position = (fh.read().split() or [None])[0]
-
         sha = write_sums(work, pname)
         finished = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
         meta = {
@@ -450,7 +444,6 @@ class Node:
             "mariadb_version": info.get("server_version", ""),
             "from_lsn": int(checkpoints["from_lsn"]),
             "to_lsn": int(checkpoints["to_lsn"]),
-            "galera_position": galera_position,
             "compression": "zstd",
             "encrypted": encrypted,
             "gpg_fingerprint": self.cfg["gpg_fingerprint"] if encrypted else None,
@@ -618,10 +611,17 @@ class Node:
 
     def check_with_server(self, datadir: str) -> int:
         """Start a throwaway mariadbd on the prepared datadir and CHECK every table."""
-        # Runs as root on a root-only copy (0700 parents), without networking, socket in that copy:
-        # no need to open the backup tree to the mysql user. Removed right after the check.
-        sockdir = os.path.join(os.path.dirname(datadir), "run")
+        # Runs as mysql (ADR 0014), without networking, socket inside the copy. The copy goes to
+        # mysql; Tera's work directories between backup_dir and the copy only get traverse (0711).
+        base = os.path.dirname(datadir)
+        sockdir = os.path.join(base, "run")
         os.makedirs(sockdir, exist_ok=True)
+        subprocess.run(["chown", "-R", "mysql:mysql", base], check=True)
+        parent = os.path.dirname(base)
+        root = os.path.realpath(self.cfg["backup_dir"])
+        while os.path.realpath(parent).startswith(root + os.sep):
+            os.chmod(parent, os.stat(parent).st_mode | 0o011)
+            parent = os.path.dirname(parent)
         relabel(os.path.dirname(datadir))
         sock = os.path.join(sockdir, "verify.sock")
         log = os.path.join(sockdir, "verify.err")
@@ -629,7 +629,7 @@ class Node:
             [
                 "mariadbd",
                 "--no-defaults",
-                "--user=root",
+                "--user=mysql",
                 f"--datadir={datadir}",
                 f"--socket={sock}",
                 "--skip-networking",
