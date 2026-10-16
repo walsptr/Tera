@@ -1,0 +1,100 @@
+---
+# Backup verify (docs/TESTING.md): end state after converge and side effects.
+# No Tera facts play here: tera_listen_address is the default route address in this scenario.
+- name: Read addresses
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Remember the address Tera uses
+      ansible.builtin.set_fact:
+        _verify_address: "{{ ansible_facts['default_ipv4']['address'] }}"
+
+- name: Verify the backup node
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Read timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      loop:
+        - tera-backup-full.timer
+        - tera-backup-incremental.timer
+      register: _verify_timers
+
+    - name: Assert timers enabled and active with the configured schedule
+      ansible.builtin.assert:
+        that:
+          - _verify_timers.results | map(attribute='status') | map(attribute='UnitFileState') | unique | list == ['enabled']
+          - _verify_timers.results | map(attribute='status') | map(attribute='ActiveState') | unique | list == ['active']
+
+    - name: Read the timer and config files
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - /etc/systemd/system/tera-backup-full.timer
+        - /etc/tera/backup/config.json
+        - /etc/tera/backup/known_hosts
+      register: _verify_files
+
+    - name: Assert schedule, config and pinned host key
+      ansible.builtin.assert:
+        that:
+          - "'OnCalendar=Sun *-*-* 01:00:00' in _timer"
+          - "'RandomizedDelaySec=15min' in _timer"
+          - _config.cluster == 'inventory'
+          - _config.targets | length == 1
+          - _config.targets[0].address == hostvars['bk01']['_verify_address']
+          - _config.gpg_fingerprint | length == 40
+          - not _config.encrypt_local
+          - _known is match('^' ~ (hostvars['bk01']['_verify_address'] | regex_escape) ~ ' ssh-ed25519 ')
+      vars:
+        _timer: "{{ _verify_files.results[0].content | b64decode }}"
+        _config: "{{ _verify_files.results[1].content | b64decode | from_json }}"
+        _known: "{{ _verify_files.results[2].content | b64decode }}"
+
+    - name: Read directory modes
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ mariadb_backup_dir }}"
+        - /etc/tera/backup
+        - /etc/tera/backup/id_ed25519
+      register: _verify_modes
+
+    - name: Assert root-only modes
+      ansible.builtin.assert:
+        that:
+          - _verify_modes.results | map(attribute='stat') | map(attribute='mode') | list == ['0700', '0700', '0600']
+          - _verify_modes.results | map(attribute='stat') | map(attribute='pw_name') | unique | list == ['root']
+
+- name: Verify the backup host
+  hosts: bk01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Read the timer
+      ansible.builtin.systemd_service:
+        name: tera-backup-target.timer
+      register: _verify_target_timer
+
+    - name: Read authorized_keys
+      ansible.builtin.slurp:
+        src: /var/lib/tera-backup-target/.ssh/authorized_keys
+      register: _verify_keys
+
+    - name: Assert the node is limited to write-only rrsync from its address
+      ansible.builtin.assert:
+        that:
+          - _verify_target_timer.status.ActiveState == 'active'
+          - _keys | length == 1
+          - _keys[0] is search('command="/usr/bin/rrsync -wo -no-del ' ~ mariadb_backup_target_dir ~ '/inventory/db01"')
+          - _keys[0] is search('restrict')
+          - _keys[0] is search('from="' ~ hostvars['db01']['_verify_address'] ~ '"')
+          - _keys[0] is search('tera:inventory:db01$')
+      vars:
+        _keys: "{{ (_verify_keys.content | b64decode).splitlines() | select('search', 'tera:') | list }}"

@@ -90,6 +90,8 @@ provisioner:
                     chars=['ascii_letters', 'digits'], length=32) }}
         mariadb_databases:
           - name: app
+        # Local backups on db03: tera destroy must keep them (ADR 0012).
+        mariadb_backup_enabled: true
         tera_vip_address: 10.77.0.100
         # The Molecule host (10.77.0.1) may read the stats page.
         haproxy_stats_sources:

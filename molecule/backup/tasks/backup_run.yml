@@ -1,0 +1,20 @@
+---
+# Take a backup on the node through the systemd unit (same path as the timers). _se_type: full | incremental.
+- name: Run tera-backup@{{ _se_type }} # noqa: command-instead-of-module (oneshot run and its exit status)
+  ansible.builtin.command:
+    cmd: systemctl start tera-backup@{{ _se_type }}.service
+  register: _se_backup_run
+  changed_when: true
+  failed_when: false
+
+- name: Read the backup journal
+  ansible.builtin.command:
+    cmd: journalctl -u tera-backup@{{ _se_type }}.service -n 5 --no-pager -o cat
+  register: _se_backup_journal
+  changed_when: false
+
+- name: Assert the backup succeeded
+  ansible.builtin.assert:
+    that:
+      - _se_backup_run.rc == 0
+    fail_msg: "{{ _se_backup_journal.stdout_lines }}"

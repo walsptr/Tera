@@ -48,6 +48,8 @@ provisioner:
           - "{{ tera_listen_address }}"
         mariadb_databases:
           - name: app
+        # Backup and restore in the shared side effect (local backups only; remote targets: molecule/backup).
+        mariadb_backup_enabled: true
     host_groups:
       loadbalancer: {}
 scenario:

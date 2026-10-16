@@ -1,0 +1,40 @@
+---
+# Shared custom config, plus a test gpg key pair in the ephemeral directory: the public key goes to
+# config/backup/ (read by Tera), the private key stays in gnupg/ for restore tests.
+- name: Prepare custom config
+  ansible.builtin.import_playbook: ../shared/prepare.yml
+
+- name: Create the test backup key pair
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
+    - name: Create directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ _eph }}/gnupg"
+        - "{{ _eph }}/config/backup"
+
+    - name: Generate the key pair (no passphrase, test only)
+      ansible.builtin.command:
+        cmd: >-
+          gpg --homedir {{ _eph }}/gnupg --batch --pinentry-mode loopback --passphrase ''
+          --quick-gen-key 'Tera test backup <backup@tera.test>' default default never
+        creates: "{{ _eph }}/gnupg/pubring.kbx"
+
+    - name: Export the public key
+      ansible.builtin.shell:
+        cmd: gpg --homedir {{ _eph }}/gnupg --armor --export backup@tera.test > {{ _eph }}/config/backup/backup.pub.asc
+        creates: "{{ _eph }}/config/backup/backup.pub.asc"
+
+    - name: Export the private key for restore tests
+      ansible.builtin.shell:
+        cmd: >-
+          gpg --homedir {{ _eph }}/gnupg --batch --pinentry-mode loopback --passphrase ''
+          --armor --export-secret-keys backup@tera.test > {{ _eph }}/backup.key.asc && chmod 0600 {{ _eph }}/backup.key.asc
+        creates: "{{ _eph }}/backup.key.asc"

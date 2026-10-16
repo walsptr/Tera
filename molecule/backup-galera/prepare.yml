@@ -1,0 +1,87 @@
+---
+# Before the galera converge: db01 alone in standalone mode, with a table app.sa and one standalone
+# backup in db01's mariadb_backup_dir. Same cluster name as the galera inventory (the inventory folder
+# is called "inventory" in both). The galera converge then migrates db01's data (db01 is the bootstrap
+# host); the side effect restores the standalone backup into the galera cluster.
+- name: Prepare custom config
+  ansible.builtin.import_playbook: ../shared/prepare.yml
+
+- name: Write a standalone inventory for db01
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+    _db01: "{{ hostvars['db01'] }}"
+  tasks:
+    - name: Create the inventory directory
+      ansible.builtin.file:
+        path: "{{ _eph }}/standalone/inventory"
+        state: directory
+        mode: "0755"
+
+    - name: Write the inventory
+      ansible.builtin.copy:
+        content: "{{ _inventory | to_nice_yaml }}"
+        dest: "{{ _eph }}/standalone/inventory/hosts.yml"
+        mode: "0644"
+      vars:
+        _inventory:
+          all:
+            children:
+              mariadb:
+                hosts:
+                  db01:
+                    ansible_connection: ssh
+                    ansible_host: "{{ _db01.ansible_host }}"
+                    ansible_port: "{{ _db01.ansible_port }}"
+                    ansible_user: "{{ _db01.ansible_user }}"
+                    ansible_private_key_file: "{{ _db01.ansible_private_key_file }}"
+                    ansible_ssh_common_args: "{{ _db01.ansible_ssh_common_args }}"
+                    ip: 10.77.0.11
+            vars:
+              tera_config_dir: "{{ _eph }}/config"
+              mariadb_cluster_mode: standalone
+              mariadb_admin_password: "{{ lookup('ansible.builtin.password', _eph ~ '/admin_password', chars=['ascii_letters', 'digits'], length=32) }}"
+              mariadb_admin_hosts: [localhost, 10.77.0.11]
+              mariadb_databases: [{name: app}]
+              mariadb_backup_enabled: true
+
+    - name: Deploy db01 in standalone mode
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - -i
+          - "{{ _eph }}/standalone/inventory/hosts.yml"
+          - "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/site.yml"
+          - -e
+          - tera_action=deploy
+      changed_when: true
+
+- name: Write standalone data on db01
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Create app.sa
+      ansible.builtin.command:
+        cmd: mariadb -e "CREATE TABLE app.sa (id INT PRIMARY KEY) ENGINE=InnoDB; INSERT INTO app.sa SELECT seq FROM app.seq_1_to_50"
+        creates: /var/lib/mysql/app/sa.ibd
+
+- name: Take the standalone backup
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
+    - name: Run tera backup with the standalone inventory
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - -i
+          - "{{ _eph }}/standalone/inventory/hosts.yml"
+          - "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/playbooks/mariadb-backup.yml"
+          - -e
+          - tera_backup_op=run
+      changed_when: true

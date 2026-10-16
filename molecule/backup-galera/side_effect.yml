@@ -1,0 +1,361 @@
+---
+# Backup on galera side effects (docs/TESTING.md, ADR 0012/0013):
+# 1. prechecks refuse the HAProxy writer as backup node, unless mariadb_backup_allow_writer;
+# 2. full + incremental on db03 while a client writes through the VIP every 0.1 s: no failed write,
+#    the writer stays db01; level-2 verification passes;
+# 3. galera restore of the latest backup (source db03, restore node db01: sent with a temporary key) with
+#    a pending restart marker on db02: whole cluster back, same checksum on every node, no row written
+#    after the backup, markers right, next deploy changed=0, tera recover refuses;
+# 4. restore of the standalone backup taken by prepare.yml: refused without
+#    mariadb_restore_allow_mode_change (MariaDB untouched), restored with it.
+- name: Writer refusal
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run prechecks with the writer as backup node
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: prechecks
+          args: [-e, mariadb_backup_host=db01]
+          expect: "adalah writer HAProxy"
+
+    - name: Run prechecks with the override
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: prechecks
+          args: [-e, mariadb_backup_host=db01, -e, mariadb_backup_allow_writer=true]
+          expect_success: true
+
+- name: Write data and start a client on db02
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Create app.g with rows A
+      ansible.builtin.command:
+        cmd: >-
+          mariadb -e "CREATE TABLE app.g (id INT PRIMARY KEY, note CHAR(1)) ENGINE=InnoDB;
+          INSERT INTO app.g SELECT seq, 'A' FROM app.seq_1_to_100;
+          CREATE TABLE app.probe (id BIGINT AUTO_INCREMENT PRIMARY KEY, note CHAR(1)) ENGINE=InnoDB"
+        creates: /var/lib/mysql/app/g.ibd
+
+- name: Start the VIP writer
+  hosts: db02
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Write client credentials
+      ansible.builtin.copy:
+        content: |
+          [client]
+          user = {{ mariadb_admin_user | default('tera_admin') }}
+          password = {{ mariadb_admin_password }}
+        dest: /root/tera-test.cnf
+        mode: "0600"
+      no_log: true
+
+    - name: Start the writer (INSERT through the VIP every 0.1 s)
+      ansible.builtin.command:
+        cmd: >-
+          systemd-run --unit tera-test-writer /bin/bash -c 'while true; do
+          mariadb --defaults-extra-file=/root/tera-test.cnf --connect-timeout=2 -h 10.77.0.100 -N -B
+          -e "INSERT INTO app.probe (note) VALUES (\"w\"); SELECT @@hostname" >> /root/writer.log 2>&1
+          || echo FAIL >> /root/writer.log; sleep 0.1; done'
+      changed_when: true
+
+- name: Take backups on db03
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run tera backup (full)
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-backup.yml
+          args: [-e, tera_backup_op=run]
+          expect_success: true
+
+    - name: Write rows B
+      ansible.builtin.command:
+        cmd: mariadb -e "INSERT INTO app.g SELECT seq, 'B' FROM app.seq_101_to_200"
+      delegate_to: db01
+      become: true
+      changed_when: true
+
+    - name: Run tera backup --incremental
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-backup.yml
+          args: [-e, tera_backup_op=run, -e, mariadb_backup_type=incremental]
+          expect_success: true
+
+- name: Stop the VIP writer
+  hosts: db02
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop the writer
+      ansible.builtin.systemd_service:
+        name: tera-test-writer
+        state: stopped
+
+    - name: Read the writer log
+      ansible.builtin.slurp:
+        src: /root/writer.log
+      register: _se_writer_log
+
+    - name: Assert no failed write and the writer stayed db01
+      ansible.builtin.assert:
+        that:
+          - _lines | length > 20
+          - _lines | select('equalto', 'FAIL') | list | length == 0
+          - _lines | select('match', '^db0') | unique | list == ['db01']
+        fail_msg: "{{ _lines | reject('equalto', 'db01') | list | unique }}"
+      vars:
+        _lines: "{{ (_se_writer_log.content | b64decode).splitlines() }}"
+
+- name: Check the backups on db03
+  hosts: db03
+  become: true
+  gather_facts: false
+  tasks:
+    - name: List backups
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup list
+      register: _se_list
+      changed_when: false
+
+    - name: Show the galera position recorded by the full
+      ansible.builtin.debug:
+        msg: "galera_position: {{ (_se_list.stdout | from_json)[0].backups[0].meta.galera_position }}"
+
+    - name: Assert a galera chain taken on db03
+      ansible.builtin.assert:
+        that:
+          - _chains | length == 1
+          - _chains[0].backups | length == 2
+          - _chains[0].backups[0].meta.mode == 'galera'
+          - _chains[0].backups[0].meta.host == 'db03'
+      vars:
+        _chains: "{{ _se_list.stdout | from_json }}"
+
+    - name: Wait for the level-2 verification after the full
+      ansible.builtin.systemd_service:
+        name: tera-backup-verify.service
+      register: _se_verify_state
+      until: _se_verify_state.status.ActiveState in ['inactive', 'failed']
+      retries: 60
+      delay: 2
+
+    - name: Read the status
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup status
+      register: _se_status
+      changed_when: false
+
+    - name: Assert verification passed
+      ansible.builtin.assert:
+        that:
+          - (_se_status.stdout | from_json).verify.last.result == 'ok'
+
+- name: Prepare the galera restore
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Record the checksum of the backed-up data
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "CHECKSUM TABLE app.g"
+      register: _se_checksum_backup
+      changed_when: false
+      when: inventory_hostname == 'db01'
+
+    - name: Write rows C (after the last backup)
+      ansible.builtin.command:
+        cmd: mariadb -e "INSERT INTO app.g SELECT seq, 'C' FROM app.seq_201_to_300"
+      changed_when: true
+      when: inventory_hostname == 'db01'
+
+    # As if a run was interrupted after writing a config: recover-like paths must clear it (ADR 0009).
+    - name: Leave a restart pending marker on db02
+      ansible.builtin.copy:
+        content: "test\n"
+        dest: "{{ mariadb_restart_marker }}"
+        mode: "0640"
+      when: inventory_hostname == 'db02'
+
+- name: Restore the galera cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run restore (source db03, restore node db01)
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-restore.yml
+          args: [-e, tera_restore_confirm=true, -e, mariadb_restore_backup=latest]
+          expect_success: true
+
+    - name: Assert the chain was sent from db03 to db01
+      ansible.builtin.assert:
+        that:
+          - "'db01 -> db03' in _se_run.stdout"
+
+- name: Check the restored cluster
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Read cluster state
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_cluster_size', 'wsrep_local_state', 'wsrep_cluster_status')"
+      register: _se_wsrep
+      changed_when: false
+
+    - name: Read rows and checksum
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT note, COUNT(*) FROM app.g GROUP BY note ORDER BY note; CHECKSUM TABLE app.g"
+      register: _se_data
+      changed_when: false
+
+    - name: Read markers
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ mariadb_restart_marker }}"
+        - "{{ mariadb_restore_marker }}"
+        - "{{ mariadb_galera_marker }}"
+        - "{{ mariadb_datadir_marker }}"
+        - "{{ tera_state_dir }}/backup/needs-full"
+      register: _se_markers
+
+    - name: Find old datadir copies
+      ansible.builtin.find:
+        paths: /var/lib
+        patterns: mysql.pre-restore-*
+        file_type: directory
+      register: _se_old
+
+    - name: Assert the whole cluster holds the backed-up data
+      ansible.builtin.assert:
+        that:
+          - _status['wsrep_cluster_size'] == '3'
+          - _status['wsrep_local_state'] == '4'
+          - _status['wsrep_cluster_status'] == 'Primary'
+          - _se_data.stdout_lines[:2] == ['A\t100', 'B\t100']
+          - _se_data.stdout_lines[2] == hostvars['db01']['_se_checksum_backup'].stdout
+          - not _se_markers.results[0].stat.exists
+          - not _se_markers.results[1].stat.exists
+          - _se_markers.results[2].stat.exists
+          - _se_markers.results[3].stat.exists
+          - _se_markers.results[4].stat.exists
+          - _se_old.matched == (1 if inventory_hostname == 'db01' else 0)
+        fail_msg: "{{ inventory_hostname }}: {{ _status }} {{ _se_data.stdout_lines }}"
+      vars:
+        _status: "{{ _se_wsrep.stdout_lines | map('split') | items2dict(key_name=0, value_name=1) }}"
+
+- name: Deploy and recover after the restore
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+    - name: Assert deploy changed nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "changed: {{ _se_changed_tasks }}"
+
+    - name: Run recover on a live cluster
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-recover.yml
+          expect: "masih Primary"
+
+- name: Read start times before the mode-change refusal
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_before
+
+- name: Restore the standalone backup
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run restore of the standalone backup without the override
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-restore.yml
+          args: [-e, tera_restore_confirm=true, -e, mariadb_restore_backup=latest, -e, mariadb_restore_source_host=db01]
+          expect: "mode 'standalone'"
+          expect_also: "mariadb_restore_allow_mode_change=true"
+
+- name: Check the refusal changed nothing
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read MariaDB start time again
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_after
+
+    - name: Assert MariaDB untouched
+      ansible.builtin.assert:
+        that:
+          - _se_started_after.status.ActiveEnterTimestampMonotonic == _se_started_before.status.ActiveEnterTimestampMonotonic
+
+- name: Restore the standalone backup with the override
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run restore with mariadb_restore_allow_mode_change
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-restore.yml
+          args: [-e, tera_restore_confirm=true, -e, mariadb_restore_backup=latest, -e, mariadb_restore_source_host=db01,
+                 -e, mariadb_restore_allow_mode_change=true]
+          expect_success: true
+
+- name: Check the cluster holds the standalone data
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read cluster size and tables
+      ansible.builtin.command:
+        cmd: >-
+          mariadb -N -B -e "SHOW GLOBAL STATUS LIKE 'wsrep_cluster_size'; SELECT COUNT(*) FROM app.sa;
+          SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'app' AND table_name = 'g'"
+      register: _se_sa
+      changed_when: false
+
+    - name: Assert standalone data on every node
+      ansible.builtin.assert:
+        that:
+          - _se_sa.stdout_lines == ['wsrep_cluster_size\t3', '50', '0']
+        fail_msg: "{{ inventory_hostname }}: {{ _se_sa.stdout_lines }}"

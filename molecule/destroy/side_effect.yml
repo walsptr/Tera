@@ -3,7 +3,8 @@
 # 1. without confirmation the destroy playbook is refused and nothing changes;
 # 2. --keep-data: datadir and bootstrap marker stay, Tera files/firewall/SELinux are gone; deploy then
 #    refuses (marker, no Primary) and tera recover brings the cluster back with the data;
-# 3. full destroy: datadir and /etc/tera are gone; deploy builds a new cluster without the old data.
+# 3. full destroy: datadir and /etc/tera are gone, the backups taken before stay (ADR 0012); deploy builds a
+#    new cluster without the old data.
 # Verify (molecule/loadbalancer/verify.yml) checks the cluster from step 3.
 - name: Write test data
   hosts: db01
@@ -168,6 +169,14 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: Take a backup before the full destroy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-backup.yml
+          args: [-e, tera_backup_op=run]
+          expect_success: true
+
     - name: Run destroy
       ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
       vars:
@@ -201,6 +210,27 @@
         that:
           - not _se_paths.results[0].stat.exists
           - not _se_paths.results[1].stat.exists
+
+    - name: Find the backups on the backup node
+      ansible.builtin.find:
+        paths: "{{ mariadb_backup_dir }}/{{ tera_cluster_name }}"
+        file_type: directory
+      register: _se_backups_left
+      when: inventory_hostname == mariadb_backup_host
+
+    - name: Read backup units and script
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/systemd/system/tera-backup-full.timer
+        - /usr/local/sbin/tera-backup
+      register: _se_backup_files
+
+    - name: Assert the backups stay while units and script are gone
+      ansible.builtin.assert:
+        that:
+          - _se_backup_files.results | selectattr('stat.exists') | list | length == 0
+          - (inventory_hostname != mariadb_backup_host) or (_se_backups_left.matched == 1)
 
 - name: Deploy a new cluster
   hosts: localhost

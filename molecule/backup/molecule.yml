@@ -1,0 +1,84 @@
+---
+# Backup scenario (docs/TESTING.md, ADR 0012/0013): standalone db01 with backups enabled and a
+# write-only backup host bk01 (group mariadb_backup_target). One OS per run via TERA_BOX* (see
+# molecule/standalone/molecule.yml). The test gpg key pair is generated in the ephemeral directory by
+# prepare.yml; nothing secret lives in the repository.
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: vagrant
+  provider:
+    name: libvirt
+platforms:
+  - &node
+    name: db01
+    box: ${TERA_BOX:-cloud-image/ubuntu-24.04}
+    # "-" (not ":-"): an empty TERA_BOX_VERSION (box_url boxes, e.g. Rocky) must stay empty.
+    box_version: ${TERA_BOX_VERSION-20260926.0.0}
+    box_url: ${TERA_BOX_URL}
+    box_download_checksum: ${TERA_BOX_CHECKSUM}
+    box_download_checksum_type: ${TERA_BOX_CHECKSUM_TYPE}
+    memory: 2048
+    cpus: 2
+    # See molecule/standalone/molecule.yml: system libvirt and full Rocky disk size.
+    provider_options:
+      qemu_use_session: false
+      machine_virtual_size: 10
+    groups:
+      - mariadb
+  - <<: *node
+    name: bk01
+    memory: 768
+    cpus: 1
+    groups:
+      - mariadb_backup_target
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+    ANSIBLE_FILTER_PLUGINS: ${MOLECULE_PROJECT_DIRECTORY}/plugins/filter
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/collections
+  playbooks:
+    prepare: prepare.yml
+    converge: ../shared/converge.yml
+    side_effect: side_effect.yml
+    verify: verify.yml
+  inventory:
+    group_vars:
+      all:
+        tera_action: deploy
+        tera_config_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/config
+        # Test-only password, generated outside the repo in the ephemeral directory.
+        mariadb_admin_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/admin_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_admin_hosts:
+          - localhost
+          - "{{ tera_listen_address }}"
+        mariadb_databases:
+          - name: app
+        mariadb_backup_enabled: true
+        mariadb_backup_targets:
+          - name: bk
+            type: rsync
+            host: bk01
+        # Public key only; prepare.yml writes it. The private key stays in the ephemeral directory.
+        mariadb_backup_gpg_public_key: ${MOLECULE_EPHEMERAL_DIRECTORY}/config/backup/backup.pub.asc
+    host_groups:
+      loadbalancer: {}
+scenario:
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - destroy
+verifier:
+  name: ansible

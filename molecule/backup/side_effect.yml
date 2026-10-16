@@ -1,0 +1,720 @@
+---
+# Backup side effects (docs/TESTING.md, ADR 0012/0013). db01 standalone, bk01 write-only backup host.
+# 1. backups off: deploy warns and removes the timers; on again: timers back;
+# 2. full + 2 incrementals with data between them (rows A, B, C; D after the last backup), metadata,
+#    status, encrypted copies verified on bk01, level-2 verification after the full;
+# 3. the node key cannot list, read, delete or escape on bk01;
+# 4. a corrupted payload fails backup-verify and restore stage 1 without stopping MariaDB;
+# 5. the rolling restart waits for the backup lock (fails after the timeout, works once released);
+# 6. a backup refuses to run while the restore marker exists;
+# 7. disaster + local restore of the latest backup: A+B+C with the recorded checksum, no D, users work,
+#    markers right, timers back, next backup is a full;
+# 8. remote restore: refused without the private key (MariaDB untouched), the first full with the key;
+#    no temporary key or keyring left;
+# 9. retention keeps 2 chains on db01 and on bk01.
+- name: Backups off
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy with backups off
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: [-e, '{"mariadb_backup_enabled": false}']
+          expect_success: true
+
+    - name: Assert deploy warned
+      ansible.builtin.assert:
+        that:
+          - "'PERINGATAN: backup belum aktif' in (_se_run.stdout | regex_replace('\\s+', ' '))"
+
+- name: Check the timers are gone
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read timer state
+      ansible.builtin.systemd_service:
+        name: tera-backup-full.timer
+      register: _se_timer
+      failed_when: false
+
+    - name: Assert no timer
+      ansible.builtin.assert:
+        that:
+          - (_se_timer.status.LoadState | default('not-found')) == 'not-found'
+
+- name: Backups on again
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+- name: Write data and take backups
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Create the test table with rows A
+      ansible.builtin.command:
+        cmd: >-
+          mariadb -e "CREATE TABLE app.bk (id INT PRIMARY KEY, note CHAR(1)) ENGINE=InnoDB;
+          INSERT INTO app.bk SELECT seq, 'A' FROM app.seq_1_to_100"
+        creates: /var/lib/mysql/app/bk.ibd
+
+    - name: Take a full backup
+      ansible.builtin.include_tasks: tasks/backup_run.yml
+      vars:
+        _se_type: full
+
+    - name: Write rows B
+      ansible.builtin.command:
+        cmd: mariadb -e "INSERT INTO app.bk SELECT seq, 'B' FROM app.seq_101_to_200"
+      changed_when: true
+
+    - name: Take incremental 1
+      ansible.builtin.include_tasks: tasks/backup_run.yml
+      vars:
+        _se_type: incremental
+
+    - name: Write rows C
+      ansible.builtin.command:
+        cmd: mariadb -e "INSERT INTO app.bk SELECT seq, 'C' FROM app.seq_201_to_300"
+      changed_when: true
+
+- name: Take incremental 2 with tera backup
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run tera backup --incremental
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-backup.yml
+          args: [-e, tera_backup_op=run, -e, mariadb_backup_type=incremental]
+          expect_success: true
+
+    - name: Assert tera backup reported the incremental
+      ansible.builtin.assert:
+        that:
+          - "'tera-backup: incremental ' in _se_run.stdout"
+
+    - name: Run tera backup-status
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-backup.yml
+          args: [-e, tera_backup_op=status]
+          expect_success: true
+
+    - name: Assert backup-status shows the last full
+      ansible.builtin.assert:
+        that:
+          - "'last_success' in _se_run.stdout"
+
+- name: Check the chain
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Record the checksum of the backed-up data
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "CHECKSUM TABLE app.bk"
+      register: _se_checksum_backup
+      changed_when: false
+
+    - name: Write rows D (after the last backup)
+      ansible.builtin.command:
+        cmd: mariadb -e "INSERT INTO app.bk SELECT seq, 'D' FROM app.seq_301_to_400"
+      changed_when: true
+
+    - name: List the backups
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup list
+      register: _se_list
+      changed_when: false
+
+    - name: Assert one chain with full and two incrementals
+      ansible.builtin.assert:
+        that:
+          - _chains | length == 1
+          - _chains[0].backups | map(attribute='meta') | map(attribute='type') | list == ['full', 'incremental', 'incremental']
+          - _chains[0].backups | selectattr('valid') | list | length == 3
+          - _meta.cluster == 'inventory'
+          - _meta.mode == 'standalone'
+          - _meta.host == 'db01'
+          - _meta.sequence == 0
+          - not _meta.encrypted
+          - _meta.sha256 | length == 64
+          - _meta.datadir_size_bytes | int > 0
+          - _meta.mariadb_version is match('^11\\.4\\.')
+          - _chains[0].backups[1].meta.from_lsn == _meta.to_lsn
+      vars:
+        _chains: "{{ _se_list.stdout | from_json }}"
+        _meta: "{{ (_se_list.stdout | from_json)[0].backups[0].meta }}"
+
+    - name: Remember the first chain
+      ansible.builtin.set_fact:
+        _se_chain1: "{{ (_se_list.stdout | from_json)[0].chain_id }}"
+
+    - name: Wait for the level-2 verification after the full
+      ansible.builtin.systemd_service:
+        name: tera-backup-verify.service
+      register: _se_verify_state
+      until: _se_verify_state.status.ActiveState in ['inactive', 'failed']
+      retries: 60
+      delay: 2
+
+    - name: Read the status
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup status
+      register: _se_status
+      changed_when: false
+
+    - name: Assert status
+      ansible.builtin.assert:
+        that:
+          - _status.last.full.result == 'ok'
+          - _status.last.incremental.result == 'ok'
+          - _status.targets.bk.result == 'ok'
+          - _status.verify.last.result == 'ok'
+          - _status.verify.last.tables | int > 0
+        fail_msg: "{{ _status | to_json }}"
+      vars:
+        _status: "{{ _se_status.stdout | from_json }}"
+
+- name: Check the copies on the backup host
+  hosts: bk01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run the backup host checks
+      ansible.builtin.systemd_service:
+        name: tera-backup-target.service
+        state: started
+
+    - name: Find verified backups
+      ansible.builtin.find:
+        paths: /var/lib/tera-backup-target/state/inventory/db01
+        patterns: "*.verified"
+        recurse: true
+      register: _se_verified
+
+    - name: Find payloads
+      ansible.builtin.find:
+        paths: /srv/tera-backup/inventory/db01
+        patterns: "backup.mbstream.zst*"
+        recurse: true
+      register: _se_payloads
+
+    - name: Assert three verified, encrypted copies
+      ansible.builtin.assert:
+        that:
+          - _se_verified.matched == 3
+          - _se_payloads.matched == 3
+          - _se_payloads.files | map(attribute='path') | select('match', '.*\\.gpg$') | list | length == 3
+
+# No Tera facts play here: tera_listen_address is the default route address in this scenario.
+- name: Read addresses
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Remember the address Tera uses
+      ansible.builtin.set_fact:
+        _se_address: "{{ ansible_facts['default_ipv4']['address'] }}"
+
+- name: Check the node key is write only
+  hosts: db01
+  become: true
+  gather_facts: false
+  vars:
+    _ssh: >-
+      ssh -i /etc/tera/backup/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes
+      -o UserKnownHostsFile=/etc/tera/backup/known_hosts
+    _dest: tera-backup@{{ hostvars['bk01']['_se_address'] }}
+  tasks:
+    # Shell: each attempt is a command line with a quoted ssh command.
+    - name: Try to list, read, delete and escape # noqa: command-instead-of-shell
+      ansible.builtin.shell:
+        cmd: "{{ item }}"
+      loop:
+        - rsync -e "{{ _ssh }}" {{ _dest }}:
+        - rsync -r -e "{{ _ssh }}" {{ _dest }}:{{ _se_chain1 }} /tmp/tera-steal
+        - mkdir -p /tmp/tera-empty && rsync -r --delete -e "{{ _ssh }}" /tmp/tera-empty/ {{ _dest }}:{{ _se_chain1 }}/
+        - "{{ _ssh }} {{ _dest }} id"
+        - rsync -e "{{ _ssh }}" /etc/hostname {{ _dest }}:../../escape
+      register: _se_steal
+      changed_when: false
+      failed_when: false
+
+    - name: Look for stolen files
+      ansible.builtin.stat:
+        path: /tmp/tera-steal
+      register: _se_stolen
+
+    - name: Assert every attempt was refused
+      ansible.builtin.assert:
+        that:
+          - _se_steal.results | rejectattr('rc', 'ne', 0) | list | length == 0
+          - not _se_stolen.stat.exists
+
+- name: Check the backup host still holds everything
+  hosts: bk01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Find payloads again
+      ansible.builtin.find:
+        paths: /srv/tera-backup/inventory/db01
+        patterns: "backup.mbstream.zst.gpg"
+        recurse: true
+      register: _se_payloads_after
+
+    - name: Find files outside the node directory
+      ansible.builtin.find:
+        paths: /srv/tera-backup
+        patterns: escape
+        recurse: true
+      register: _se_escape
+
+    - name: Assert nothing was deleted or written outside
+      ansible.builtin.assert:
+        that:
+          - _se_payloads_after.matched == 3
+          - _se_escape.matched == 0
+
+- name: Corrupted payload
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Find the last incremental payload
+      ansible.builtin.shell:
+        cmd: ls -d /var/backups/tera/mariadb/inventory/{{ _se_chain1 }}/02-incremental-*/backup.mbstream.zst
+      register: _se_payload
+      changed_when: false
+
+    - name: Keep a copy and flip bytes in the payload
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail; cp -p {{ _se_payload.stdout }} /root/payload.orig &&
+          printf 'XXXXXXXX' | dd of={{ _se_payload.stdout }} bs=1 seek=100 conv=notrunc status=none
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Read MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_before
+
+- name: Verify and restore the corrupted chain
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run backup-verify
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-backup.yml
+          args: [-e, tera_backup_op=verify]
+          expect: "sha256 payload 02-incremental"
+
+    - name: Run restore of the corrupted chain
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-restore.yml
+          args: [-e, tera_restore_confirm=true, -e, mariadb_restore_backup=latest]
+          expect: "Restore tahap 1 gagal"
+          expect_also: "MariaDB tidak dihentikan"
+
+- name: Check the failed restore changed nothing
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Read MariaDB start time again
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_after
+
+    - name: Read the restore marker
+      ansible.builtin.stat:
+        path: "{{ mariadb_restore_marker }}"
+      register: _se_marker
+
+    - name: Read timer state
+      ansible.builtin.systemd_service:
+        name: tera-backup-full.timer
+      register: _se_timer_active
+
+    - name: Count rows
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT COUNT(*) FROM app.bk"
+      register: _se_rows_untouched
+      changed_when: false
+
+    - name: Assert MariaDB untouched, marker gone, timers back
+      ansible.builtin.assert:
+        that:
+          - _se_started_after.status.ActiveEnterTimestampMonotonic == _se_started_before.status.ActiveEnterTimestampMonotonic
+          - not _se_marker.stat.exists
+          - _se_timer_active.status.ActiveState == 'active'
+          - _se_rows_untouched.stdout | trim == '400'
+
+    - name: Put the original payload back
+      ansible.builtin.command:
+        cmd: mv /root/payload.orig {{ _se_payload.stdout }}
+      changed_when: true
+
+- name: Rolling restart waits for the backup lock
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Hold the backup lock
+      ansible.builtin.command:
+        cmd: systemd-run --unit tera-test-lock flock {{ mariadb_backup_lock }} sleep 600
+      changed_when: true
+
+    - name: Add a config change that needs a restart
+      ansible.builtin.copy:
+        content: "[mysqld]\nmax_connections = 345\n"
+        dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/db01/zz-backup-lock.cnf"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+- name: Reconfigure while the lock is held
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure with a short lock timeout
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, mariadb_backup_lock_timeout=5]
+          expect: "restart MariaDB menunggu backup yang sedang berjalan"
+
+- name: Release the lock
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop the lock holder
+      ansible.builtin.systemd_service:
+        name: tera-test-lock
+        state: stopped
+
+- name: Reconfigure after the lock is released
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+- name: Check the change is active
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read max_connections
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT @@max_connections"
+      register: _se_maxconn
+      changed_when: false
+
+    - name: Assert the restart happened
+      ansible.builtin.assert:
+        that:
+          - _se_maxconn.stdout | trim == '345'
+
+- name: Backup refuses during a restore
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Write a restore marker
+      ansible.builtin.copy:
+        content: "test\n"
+        dest: "{{ mariadb_restore_marker }}"
+        mode: "0644"
+
+    - name: Run a backup
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup run full
+      register: _se_refused_backup
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the restore marker
+      ansible.builtin.file:
+        path: "{{ mariadb_restore_marker }}"
+        state: absent
+
+    - name: Assert the backup refused
+      ansible.builtin.assert:
+        that:
+          - _se_refused_backup.rc == 1
+          - "'restore sedang berjalan atau terputus' in _se_refused_backup.stderr"
+
+- name: Disaster
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Drop the test table
+      ansible.builtin.command:
+        cmd: mariadb -e "DROP TABLE app.bk"
+      changed_when: true
+
+- name: Restore the latest backup
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run restore
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-restore.yml
+          args: [-e, tera_restore_confirm=true, -e, mariadb_restore_backup=latest]
+          expect_success: true
+
+- name: Check the restored node
+  hosts: db01
+  become: true
+  gather_facts: false
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Count rows per note
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT note, COUNT(*) FROM app.bk GROUP BY note ORDER BY note"
+      register: _se_rows
+      changed_when: false
+
+    - name: Read the checksum
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "CHECKSUM TABLE app.bk"
+      register: _se_checksum_restored
+      changed_when: false
+
+    - name: Log in as admin over TCP
+      ansible.builtin.command:
+        cmd: mariadb -h {{ _se_address }} -u tera_admin -p{{ mariadb_admin_password }} -N -e "SELECT 1"
+      register: _se_admin
+      changed_when: false
+      no_log: true
+
+    - name: Read paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ mariadb_restart_marker }}"
+        - "{{ mariadb_restore_marker }}"
+        - "{{ mariadb_datadir_marker }}"
+        - "{{ tera_state_dir }}/backup/needs-full"
+      register: _se_paths
+
+    - name: Find the old datadir
+      ansible.builtin.find:
+        paths: /var/lib
+        patterns: mysql.pre-restore-*
+        file_type: directory
+      register: _se_old
+
+    - name: Read timer state
+      ansible.builtin.systemd_service:
+        name: tera-backup-full.timer
+      register: _se_timer_after
+
+    - name: Assert data, users, markers and timers
+      ansible.builtin.assert:
+        that:
+          - _se_rows.stdout_lines == ['A\t100', 'B\t100', 'C\t100']
+          - _se_checksum_restored.stdout == _se_checksum_backup.stdout
+          - _se_admin.stdout | trim == '1'
+          - not _se_paths.results[0].stat.exists
+          - not _se_paths.results[1].stat.exists
+          - _se_paths.results[2].stat.exists
+          - _se_paths.results[3].stat.exists
+          - _se_old.matched == 1
+          - _se_timer_after.status.ActiveState == 'active'
+        fail_msg: "rows={{ _se_rows.stdout_lines }} checksum={{ _se_checksum_restored.stdout }} vs {{ _se_checksum_backup.stdout }}"
+
+    - name: Ask for an incremental after the restore
+      ansible.builtin.include_tasks: tasks/backup_run.yml
+      vars:
+        _se_type: incremental
+
+    - name: List the backups after the restore
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup list
+      register: _se_list_after
+      changed_when: false
+
+    - name: Assert the backup after the restore is a full in a new chain
+      ansible.builtin.assert:
+        that:
+          - _chains | length == 2
+          - _chains[-1].backups | length == 1
+          - _chains[-1].backups[0].meta.type == 'full'
+      vars:
+        _chains: "{{ _se_list_after.stdout | from_json }}"
+
+    - name: Read the needs-full flag again
+      ansible.builtin.stat:
+        path: "{{ tera_state_dir }}/backup/needs-full"
+      register: _se_needs_full
+
+    - name: Assert the flag was cleared by the full
+      ansible.builtin.assert:
+        that:
+          - not _se_needs_full.stat.exists
+
+    - name: Push the new full to the backup host before the remote tests
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup push
+      changed_when: true
+
+- name: Restore from the backup host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
+    - name: Run the backup host checks
+      ansible.builtin.systemd_service:
+        name: tera-backup-target.service
+        state: started
+      delegate_to: bk01
+      become: true
+
+    - name: Read MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      delegate_to: db01
+      become: true
+      register: _se_remote_before
+
+    - name: Run remote restore without the private key
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-restore.yml
+          args: [-e, tera_restore_confirm=true, -e, "mariadb_restore_backup={{ hostvars['db01']['_se_chain1'] }}/0",
+                 -e, mariadb_restore_source=bk]
+          expect: "terenkripsi; butuh private key"
+
+    - name: Read MariaDB start time again
+      ansible.builtin.systemd_service:
+        name: mariadb
+      delegate_to: db01
+      become: true
+      register: _se_remote_after
+
+    - name: Assert MariaDB untouched
+      ansible.builtin.assert:
+        that:
+          - _se_remote_after.status.ActiveEnterTimestampMonotonic == _se_remote_before.status.ActiveEnterTimestampMonotonic
+
+    - name: Run remote restore of the first full with the private key
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-restore.yml
+          args: [-e, tera_restore_confirm=true, -e, "mariadb_restore_backup={{ hostvars['db01']['_se_chain1'] }}/0",
+                 -e, mariadb_restore_source=bk, -e, "mariadb_restore_gpg_private_key={{ _eph }}/backup.key.asc"]
+          expect_success: true
+
+- name: Check the remote restore
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Count rows per note
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT note, COUNT(*) FROM app.bk GROUP BY note"
+      register: _se_rows_remote
+      changed_when: false
+
+    - name: Look for temporary keys and keyrings
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail; (grep -c tera-restore /root/.ssh/authorized_keys || true);
+          (find /tmp -maxdepth 1 -name 'tera-gpg.*' | wc -l)
+        executable: /bin/bash
+      register: _se_leftovers
+      changed_when: false
+
+    - name: Assert only rows A and no leftovers
+      ansible.builtin.assert:
+        that:
+          - _se_rows_remote.stdout_lines == ['A\t100']
+          - _se_leftovers.stdout_lines == ['0', '0']
+
+- name: Retention
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Take two more full backups
+      ansible.builtin.include_tasks: tasks/backup_run.yml
+      vars:
+        _se_type: full
+      loop: [1, 2]
+
+    - name: List local chains
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup list
+      register: _se_list_retention
+      changed_when: false
+
+    - name: Assert two chains kept locally
+      ansible.builtin.assert:
+        that:
+          - _se_list_retention.stdout | from_json | length == 2
+
+- name: Retention on the backup host
+  hosts: bk01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run the backup host checks
+      ansible.builtin.systemd_service:
+        name: tera-backup-target.service
+        state: started
+
+    - name: Find chains
+      ansible.builtin.find:
+        paths: /srv/tera-backup/inventory/db01
+        file_type: directory
+      register: _se_remote_chains
+
+    - name: Assert two chains kept on the backup host
+      ansible.builtin.assert:
+        that:
+          - _se_remote_chains.matched == 2

@@ -169,6 +169,87 @@
         name: mariadb
         state: started
 
+# Backups (ADR 0012/0013), only in scenarios with mariadb_backup_enabled (standalone-podman, also in CI):
+# full, rows, incremental, disaster, local restore of the latest backup.
+- name: Back up, lose and restore data
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Remember whether backups are on
+      ansible.builtin.set_fact:
+        _se_backup: "{{ mariadb_backup_enabled | default(false) | bool }}"
+
+    - name: Create app.bk with rows A
+      ansible.builtin.command:
+        cmd: mariadb -e "CREATE TABLE app.bk (id INT PRIMARY KEY, note CHAR(1)); INSERT INTO app.bk SELECT seq, 'A' FROM app.seq_1_to_50"
+        creates: /var/lib/mysql/app/bk.ibd
+      when: _se_backup
+
+- name: Take the backups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run tera backup and tera backup --incremental
+      when: hostvars['db01']['_se_backup'] | bool
+      block:
+        - name: Run tera backup
+          ansible.builtin.include_tasks: tasks/tera_run.yml
+          vars:
+            _se_case:
+              playbook: playbooks/mariadb-backup.yml
+              args: [-e, tera_backup_op=run]
+              expect_success: true
+
+        - name: Write rows B
+          ansible.builtin.command:
+            cmd: mariadb -e "INSERT INTO app.bk SELECT seq, 'B' FROM app.seq_51_to_100"
+          delegate_to: db01
+          become: true
+          changed_when: true
+
+        - name: Run tera backup --incremental
+          ansible.builtin.include_tasks: tasks/tera_run.yml
+          vars:
+            _se_case:
+              playbook: playbooks/mariadb-backup.yml
+              args: [-e, tera_backup_op=run, -e, mariadb_backup_type=incremental]
+              expect_success: true
+
+        - name: Drop the table
+          ansible.builtin.command:
+            cmd: mariadb -e "DROP TABLE app.bk"
+          delegate_to: db01
+          become: true
+          changed_when: true
+
+        - name: Run tera restore
+          ansible.builtin.include_tasks: tasks/tera_run.yml
+          vars:
+            _se_case:
+              playbook: playbooks/mariadb-restore.yml
+              args: [-e, tera_restore_confirm=true, -e, mariadb_restore_backup=latest]
+              expect_success: true
+
+- name: Check the restored data
+  hosts: db01
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Count rows per note
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT note, COUNT(*) FROM app.bk GROUP BY note ORDER BY note"
+      register: _se_bk_rows
+      changed_when: false
+      when: _se_backup
+
+    - name: Assert rows A and B are back
+      ansible.builtin.assert:
+        that:
+          - _se_bk_rows.stdout_lines == ['A\t50', 'B\t50']
+      when: _se_backup
+
 - name: Add a pending config change
   hosts: localhost
   connection: local
