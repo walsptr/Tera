@@ -99,6 +99,8 @@ serta restore lintas cluster menunggu ADR.
 
 ## Fase 4b — Operasional
 
+- [ ] Kecil: `mariadbd` sementara untuk verifikasi/restore berjalan sebagai user `mysql`, bukan root (perbaiki izin direktori kerja)
+- [ ] Kecil: field `galera_position` di metadata backup: hapus, atau dokumentasikan bahwa selalu `null`
 - [ ] Upgrade minor rolling (patch dalam satu seri; perpindahan seri ditolak)
 - [ ] Exporter monitoring (`mysqld_exporter`, `node_exporter` opsional)
 - [ ] Scale in
