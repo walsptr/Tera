@@ -50,3 +50,7 @@ Keputusan desain Tera dicatat di sini.
 | [0012](0012-backup-mariabackup.md) | Backup MariaDB dengan mariabackup | Accepted |
 | [0013](0013-restore-mariabackup.md) | Restore dari backup mariabackup | Accepted (pengiriman: lihat 0014) |
 | [0014](0014-restore-receiver-user.md) | Penerima restore khusus dan kunci sementara ber-TTL | Accepted |
+| [0015](0015-rolling-minor-upgrade.md) | Upgrade minor rolling | Accepted |
+| [0016](0016-monitoring-exporters.md) | Exporter monitoring | Accepted |
+| [0017](0017-galera-scale-in.md) | Scale in Galera dalam dua langkah | Accepted |
+| [0018](0018-dynamic-config-set-global.md) | Perubahan config dinamis lewat SET GLOBAL | Accepted |

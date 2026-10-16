@@ -47,6 +47,14 @@ Dokumen ini wajib dibaca sebelum menulis kode.
 - Task yang memuat password: `no_log: true`, dan tetap isi `loop_control.label`. Catatan: di ansible-core
   terbaru (teruji 2.21) label ikut disensor saat `no_log: true`; keamanan password didahulukan.
 
+- **Variabel khusus test** (fault injection di Molecule) memakai prefix `__tera_test_` (mis.
+  `__tera_test_fail_set_global_host`). Aturannya:
+  - hanya di-set dari skenario Molecule (`molecule/`), tidak pernah di `inventory/sample/`, README, atau `docs/`
+    selain dokumen ini dan `docs/TESTING.md`;
+  - tidak punya default di `defaults/`: role membacanya dengan `| default(...)`, sehingga tanpa variabel itu
+    perilaku produksi tidak berubah;
+  - setiap pemakaian diberi komentar `# test-only fault injection` dan dicakup test yang menjelaskan jalurnya.
+
 ## Lint
 
 - `ansible-lint` memakai profil `production`.

@@ -44,6 +44,12 @@ lint, syntax-check, dan pytest.
   - Firewall host harus mengizinkan DHCP/DNS dari bridge libvirt. firewalld (default Fedora) sudah
     menangani ini lewat zona `libvirt`. `iptables-services` dengan ruleset bawaan (`REJECT` di akhir
     chain INPUT) memblokir DHCP: VM boot tetapi tidak pernah mendapat IP dan `vagrant up` timeout.
+  - dnsmasq libvirt meneruskan DNS ke resolver host. Di sebagian jaringan (terlihat 2026-10-16 di satu Wi-Fi),
+    resolver itu tidak menjawab dari libvirt, sehingga `dnf`/`apt` di VM gagal dengan "Could not resolve
+    host" walaupun VM punya koneksi IP. Cek dari host: `dig @<resolver> mariadb.org`. Workaround lab saja,
+    di VM yang sudah dibuat (bukan bagian role atau skenario):
+    `nmcli con mod "<koneksi eth0>" ipv4.ignore-auto-dns yes ipv4.dns 1.1.1.1 && nmcli con up "<koneksi eth0>"`
+    (Rocky), lalu jalankan `molecule converge` lagi.
   - vagrant-libvirt 0.11 memakai `virtual_size` dari `metadata.json` box sebagai ukuran disk VM. Box
     Rocky 9.8 menulis `5` padahal image-nya 10 GiB, sehingga disk terpotong dan guest jatuh ke dracut
     emergency mode (tidak pernah mendapat IP). Skenario memaksa `machine_virtual_size: 10`; box dengan
