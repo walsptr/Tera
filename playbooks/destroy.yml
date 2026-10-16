@@ -25,6 +25,32 @@
         name: loadbalancer
         tasks_from: destroy.yml
 
+- name: Destroy backup hosts
+  hosts: mariadb_backup_target
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run backup_target destroy
+      ansible.builtin.include_role:
+        name: backup_target
+        tasks_from: destroy.yml
+
+- name: Destroy mariadb backups (timers and scripts; backups stay)
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run mariadb_backup destroy
+      ansible.builtin.include_role:
+        name: mariadb_backup
+        tasks_from: destroy.yml
+
 - name: Destroy mariadb
   hosts: mariadb
   become: true

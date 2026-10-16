@@ -1,0 +1,81 @@
+---
+# Backup settings (ADR 0012). Runs on every mariadb node; checks that only read variables run once.
+- name: Check backup settings
+  ansible.builtin.assert:
+    that:
+      - mariadb_backup_enabled | type_debug == 'bool'
+      - mariadb_backup_host in groups['mariadb']
+      - mariadb_backup_dir is match('^/')
+      - mariadb_backup_keep_full | int >= 1
+      - (mariadb_backup_throttle | string) is match('^[0-9]*$')
+      - mariadb_backup_targets is sequence
+      - mariadb_backup_targets is not string
+    fail_msg: >-
+      Setting backup tidak valid: mariadb_backup_enabled harus true/false, mariadb_backup_host
+      ('{{ mariadb_backup_host }}') harus salah satu dari {{ groups['mariadb'] | join(', ') }},
+      mariadb_backup_dir path absolut, mariadb_backup_keep_full >= 1, mariadb_backup_throttle kosong atau
+      angka, dan mariadb_backup_targets berupa list. Perbaiki group_vars/all/tera.yml.
+    quiet: true
+  run_once: true
+
+- name: Refuse backups on the HAProxy writer
+  ansible.builtin.assert:
+    that:
+      - not (mariadb_cluster_mode == 'galera' and mariadb_lb_mode == 'single_writer'
+        and mariadb_backup_host == groups['mariadb'][0] and not (mariadb_backup_allow_writer | bool))
+    fail_msg: >-
+      mariadb_backup_host {{ mariadb_backup_host }} adalah writer HAProxy (node pertama, single_writer). Backup
+      di writer menyebabkan failover dan memutus sesi saat writer kembali (docs/spikes/2026-10-16-mariabackup-galera.md).
+      Pakai node lain (default: node terakhir), atau set mariadb_backup_allow_writer: true jika memang disengaja.
+    quiet: true
+  run_once: true
+  when: mariadb_backup_enabled | bool
+
+- name: Check backup targets
+  ansible.builtin.assert:
+    that:
+      - mariadb_backup_targets | map(attribute='name', default='') | select | list | length == mariadb_backup_targets | length
+      - mariadb_backup_targets | map(attribute='name') | unique | list | length == mariadb_backup_targets | length
+      - mariadb_backup_targets | rejectattr('type', 'defined') | list | length == 0
+      - mariadb_backup_targets | rejectattr('type', 'equalto', 'rsync') | list | length == 0
+      - mariadb_backup_targets | map(attribute='host', default='') | reject('in', groups['mariadb_backup_target'] | default([])) | list | length == 0
+    fail_msg: >-
+      mariadb_backup_targets tidak valid. Setiap entri butuh name unik, type: rsync, dan host yang ada di group
+      inventory mariadb_backup_target (sekarang: {{ groups['mariadb_backup_target'] | default([]) | join(', ') or 'kosong' }}).
+      Contoh: [{name: bk, type: rsync, host: backup01}].
+    quiet: true
+  run_once: true
+  when: mariadb_backup_enabled | bool
+
+- name: Check the gpg public key
+  ansible.builtin.assert:
+    that:
+      - mariadb_backup_gpg_public_key | length > 0
+      - mariadb_backup_gpg_public_key is match('^/')
+      - lookup('ansible.builtin.fileglob', mariadb_backup_gpg_public_key) | length > 0
+      - lookup('ansible.builtin.file', mariadb_backup_gpg_public_key) is search('BEGIN PGP PUBLIC KEY BLOCK')
+      - lookup('ansible.builtin.file', mariadb_backup_gpg_public_key) is not search('PRIVATE KEY')
+    fail_msg: >-
+      Salinan remote wajib terenkripsi gpg (ADR 0012). Set mariadb_backup_gpg_public_key ke path absolut file
+      public key armored di controller (mis. inventory/<cluster>/config/backup/backup.pub.asc; buat dengan
+      gpg --armor --export <id>). File itu tidak boleh berisi private key. Sekarang:
+      '{{ mariadb_backup_gpg_public_key }}'.
+    quiet: true
+  run_once: true
+  when:
+    - mariadb_backup_enabled | bool
+    - (mariadb_backup_targets | length > 0) or (mariadb_backup_encrypt_local | bool)
+
+- name: Warn about the desync window on small galera clusters
+  ansible.builtin.debug:
+    msg: >-
+      Catatan backup: selama BACKUP STAGE BLOCK_DDL (salinan data non-InnoDB) {{ mariadb_backup_host }} desync dan keluar
+      dari pool HAProxy; lamanya bergantung pada jumlah dan ukuran tabel non-InnoDB (biasanya beberapa detik).
+      Dengan {{ groups['mariadb'] | length }} node, selama itu hanya {{ groups['mariadb'] | length - 2 }} kandidat
+      failover yang tersisa.{% if mariadb_backup_throttle | string | length > 0 %} mariadb_backup_throttle
+      memperpanjang jendela ini.{% endif %}
+  run_once: true
+  when:
+    - mariadb_backup_enabled | bool
+    - mariadb_cluster_mode == 'galera'
+    - groups['mariadb'] | length <= 3

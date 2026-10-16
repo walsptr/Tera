@@ -17,6 +17,12 @@ Commands:
   deploy      -i <cluster> [args]    Deploy or converge the cluster
   reconfigure -i <cluster> [args]    Apply config changes, rolling restart if needed
   recover     -i <cluster> [args]    Recover a Galera cluster after full outage
+  backup      -i <cluster> [--incremental] [args]
+                                     Take a backup now on mariadb_backup_host (default full)
+  backup-verify -i <cluster> [args]  Unpack, prepare and check the latest backup
+                                     (-e mariadb_backup_verify_backup=<chain_id>/<seq>,
+                                     -e mariadb_backup_gpg_private_key=<file> for encrypted backups)
+  backup-status -i <cluster> [args]  Show the backup status of every node
   destroy     -i <cluster> ${DESTROY_FLAG} [--keep-data] [args]
                                      Stop everything and remove what Tera installed (packages stay).
                                      --keep-data keeps the datadir (galera: and the bootstrap marker,
@@ -164,14 +170,14 @@ main() {
       cmd_new_cluster "$@"
       return 0
       ;;
-    genpwd | prechecks | deploy | reconfigure | recover | destroy) ;;
+    genpwd | prechecks | deploy | reconfigure | recover | destroy | backup | backup-verify | backup-status) ;;
     *)
       usage >&2
       die "perintah tidak dikenal: $cmd"
       ;;
   esac
 
-  local target="" confirm=false keep_data=false
+  local target="" confirm=false keep_data=false incremental=false
   local extra=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -186,6 +192,10 @@ main() {
         ;;
       --keep-data)
         keep_data=true
+        shift
+        ;;
+      --incremental)
+        incremental=true
         shift
         ;;
       --)
@@ -203,6 +213,9 @@ main() {
   if $keep_data && [[ "$cmd" != destroy ]]; then
     die "--keep-data hanya untuk destroy"
   fi
+  if $incremental && [[ "$cmd" != backup ]]; then
+    die "--incremental hanya untuk backup"
+  fi
   resolve_inventory "$target"
 
   case "$cmd" in
@@ -215,6 +228,17 @@ main() {
       ;;
     recover)
       run_playbook playbooks/mariadb-recover.yml ${extra[@]+"${extra[@]}"}
+      ;;
+    backup)
+      local type=full
+      $incremental && type=incremental
+      run_playbook playbooks/mariadb-backup.yml -e tera_backup_op=run -e "mariadb_backup_type=$type" ${extra[@]+"${extra[@]}"}
+      ;;
+    backup-verify)
+      run_playbook playbooks/mariadb-backup.yml -e tera_backup_op=verify ${extra[@]+"${extra[@]}"}
+      ;;
+    backup-status)
+      run_playbook playbooks/mariadb-backup.yml -e tera_backup_op=status ${extra[@]+"${extra[@]}"}
       ;;
     destroy)
       $confirm || die "destroy menghapus data. Ulangi dengan flag $DESTROY_FLAG jika yakin."

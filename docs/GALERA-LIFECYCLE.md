@@ -101,6 +101,9 @@ Dievaluasi setelah config ditulis, sebelum start/restart.
 - Hanya node dengan `mariadb_restart_required` (termasuk node yang punya restart pending marker).
 - Urutan per node: restart → `wait_for` port di `tera_listen_address` → (mode galera) tunggu Synced →
   hapus restart pending marker → reset flag.
+- Restart dijalankan di bawah lock backup (`flock -w mariadb_backup_lock_timeout`, ADR 0012): menunggu backup
+  yang sedang berjalan di node itu, dan backup tidak bisa mulai selama restart. Jika batas waktu habis, run
+  gagal dengan pesan; restart pending marker tetap ada, jadi run berikutnya melanjutkan.
 - Jika satu node gagal, run berhenti; node lain tidak disentuh (`serial: 1`, `max_fail_percentage: 0`).
 - Tidak memakai handler.
 
@@ -174,3 +177,4 @@ SST untuk data besar bisa butuh nilai yang lebih tinggi; naikkan di `group_vars`
 - Marker hilang karena SST.
 - Restart pada run tanpa perubahan config (dan tanpa restart pending marker).
 - Config baru yang sudah ditulis tidak pernah aktif karena run sebelumnya terputus.
+- Restart MariaDB saat backup sedang berjalan di node itu.

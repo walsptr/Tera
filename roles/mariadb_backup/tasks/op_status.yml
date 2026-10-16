@@ -1,0 +1,14 @@
+---
+# tera backup-status: the status file of every node that has one (ADR 0012).
+- name: Read the backup status
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/tera-backup status
+  register: _mariadb_backup_status
+  changed_when: false
+  failed_when: false
+
+- name: Show the backup status
+  ansible.builtin.debug:
+    msg: >-
+      {{ (_mariadb_backup_status.stdout | from_json) if _mariadb_backup_status.rc == 0
+         else 'tera-backup belum terpasang di node ini (jalankan ./tera deploy)' }}

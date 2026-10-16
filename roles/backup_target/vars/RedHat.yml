@@ -1,0 +1,5 @@
+---
+_backup_target_packages:
+  - rsync
+  - rsync-rrsync
+  - python3

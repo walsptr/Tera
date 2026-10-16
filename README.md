@@ -47,6 +47,15 @@ ansible-vault encrypt inventory/prod-a/group_vars/all/passwords.yml   # disarank
 ./tera deploy    -i inventory/prod-a
 ```
 
+Backup **belum aktif** secara default: setiap `deploy` dan `reconfigure` menampilkan peringatan sampai Anda
+mengaktifkannya. Langkah minimal (lihat [Backup dan restore](#backup-dan-restore)):
+
+```bash
+echo 'mariadb_backup_enabled: true' >> inventory/prod-a/group_vars/all/tera.yml
+./tera reconfigure -i inventory/prod-a    # memasang timer: full Minggu 01:00, incremental hari lain
+./tera backup      -i inventory/prod-a    # backup full pertama sekarang
+```
+
 Setelah `passwords.yml` dienkripsi, tambahkan `--ask-vault-pass` (atau set `ANSIBLE_VAULT_PASSWORD_FILE`) ke
 setiap perintah; argumen tambahan diteruskan apa adanya ke `ansible-playbook`. `genpwd` hanya bisa dijalankan
 sebelum file dienkripsi.
@@ -148,6 +157,48 @@ Jika semua node mati (listrik padam, crash), dua hal bisa terjadi:
   Untuk memaksa node tertentu: `./tera recover -i inventory/prod-b -e mariadb_recover_from=db02`.
   **Hati-hati**: memaksa node dengan data lebih lama menghilangkan transaksi yang lebih baru.
 
+## Backup dan restore
+
+Backup memakai `mariabackup` (full + incremental, dikompresi zstd), dijalankan systemd timer di node backup,
+tanpa user atau password tambahan (root lewat unix socket).
+
+```yaml
+# inventory/prod-b/group_vars/all/tera.yml
+mariadb_backup_enabled: true
+# mariadb_backup_host: db03                    # default: node terakhir (galera: bukan writer HAProxy)
+# mariadb_backup_dir: /var/backups/tera/mariadb  # disarankan disk terpisah dari datadir
+mariadb_backup_keep_full: 2                    # jumlah rantai (full + incremental-nya) yang disimpan
+mariadb_backup_targets:                        # salinan di luar node, selalu terenkripsi gpg
+  - name: bk
+    type: rsync
+    host: backup01                             # host di group mariadb_backup_target (hosts.yml)
+mariadb_backup_gpg_public_key: "{{ inventory_dir }}/config/backup/backup.pub.asc"
+```
+
+```bash
+gpg --armor --export backup@example.com > inventory/prod-b/config/backup/backup.pub.asc   # public key saja
+./tera reconfigure    -i inventory/prod-b                  # timer, kunci, host backup
+./tera backup         -i inventory/prod-b [--incremental]  # backup sekarang
+./tera backup-status  -i inventory/prod-b                  # status terakhir setiap node
+./tera backup-verify  -i inventory/prod-b                  # bongkar, prepare, CHECK TABLE (salinan sementara)
+```
+
+- **Jadwal:** full Minggu, incremental Senin–Sabtu, pukul 01:00 waktu node ditambah jeda acak hingga 15
+  menit (`mariadb_backup_full_schedule`, `mariadb_backup_incremental_schedule`,
+  `mariadb_backup_randomized_delay`). Incremental tanpa full yang sah otomatis menjadi full.
+- **Verifikasi:** setiap backup diperiksa checksum-nya; setelah setiap full, backup dibongkar dan diuji dengan
+  `mariadbd` sementara (`CHECK TABLE`) dengan prioritas rendah. Jika ruang sementara tidak cukup, verifikasi
+  dilewati dengan status `warning`. Matikan dengan `mariadb_backup_verify_after_full: false`.
+- **Retensi:** berdasarkan jumlah rantai, bukan umur: rantai lama baru dihapus setelah full baru terbukti baik,
+  sehingga backup yang gagal diam-diam tidak pernah membuat semua backup terhapus.
+- **Host backup:** node backup hanya bisa **menulis** ke sana; ia tidak bisa membaca, mendaftar, atau menghapus
+  backup remote. Retensi dan pemeriksaan checksum remote dijalankan host backup sendiri.
+- **Enkripsi:** salinan remote selalu dienkripsi dengan public key gpg; private key **tidak pernah** ada di node.
+  Simpan private key di tempat aman: tanpa private key, salinan remote tidak bisa dipakai. Salinan lokal
+  default tidak terenkripsi (root di node sudah bisa membaca datadir; restore darurat tidak bergantung pada
+  private key); set `mariadb_backup_encrypt_local: true` jika perlu.
+- `tera destroy` **tidak pernah** menghapus backup, baik di node maupun di host backup.
+
 ## Destroy
 
 ```bash
@@ -176,6 +227,12 @@ tidak dihapus. Dengan `--keep-data` di cluster Galera, deploy berikutnya akan me
 - **Tidak ada bootstrap otomatis untuk cluster lama** dan **tidak ada SST yang menimpa data user tanpa izin**
   (`mariadb_galera_allow_sst_overwrite: true` untuk sengaja membuang data di node itu).
 - `--limit` ditolak untuk `deploy` mode Galera; untuk sebagian host gunakan `reconfigure --limit`.
+- **Node backup keluar sebentar dari pool saat backup (Galera).** Selama tahap `BACKUP STAGE BLOCK_DDL`
+  (salinan tabel non-InnoDB), node backup desync dan HAProxy mengeluarkannya; biasanya beberapa detik, lebih
+  lama jika ada banyak tabel non-InnoDB. Salinan InnoDB berjalan saat node tetap melayani. Dengan 3 node, selama
+  jendela itu hanya satu kandidat failover yang tersisa. `mariadb_backup_throttle` memperpanjang jendela ini.
+- **Rolling restart menunggu backup** yang sedang berjalan di node itu (maks `mariadb_backup_lock_timeout`,
+  default 2 jam), lalu gagal dengan pesan jika backup belum selesai.
 
 ## Firewall
 
@@ -200,4 +257,4 @@ atas, atau set `tera_manage_firewall: false` agar Tera sama sekali tidak menyent
 - `docs/CUSTOM-CONFIG.md`: aturan merge custom config
 - `docs/GALERA-LIFECYCLE.md`: bootstrap, join, rolling restart, recover
 - `docs/TESTING.md`: cara Tera diuji (Molecule) dan checklist lab
-- `docs/decisions/`: keputusan desain (ADR)
+- `docs/decisions/`: keputusan desain (ADR); backup dan restore di ADR 0012 dan 0013

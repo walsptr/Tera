@@ -1,0 +1,9 @@
+---
+_mariadb_backup_packages:
+  - MariaDB-backup
+  - zstd
+  - gnupg2
+  - rsync
+  - rsync-rrsync
+  - openssh-clients
+  - policycoreutils-python-utils

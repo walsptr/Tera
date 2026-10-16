@@ -1,0 +1,30 @@
+---
+# SSH key of the backup node (ADR 0012), read by the backup_target play to authorize it with
+# rrsync -wo -no-del. Runs before that play; deploy.yml writes the rest.
+- name: Create the backup state directory
+  ansible.builtin.file:
+    path: "{{ tera_state_dir }}/backup"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: _mariadb_backup_remote | bool
+
+- name: Generate the backup SSH key
+  ansible.builtin.command:
+    cmd: ssh-keygen -q -t ed25519 -N '' -C tera-backup@{{ inventory_hostname }} -f {{ tera_state_dir }}/backup/id_ed25519
+    creates: "{{ tera_state_dir }}/backup/id_ed25519"
+  when: _mariadb_backup_remote | bool
+
+- name: Read the backup SSH public key
+  ansible.builtin.slurp:
+    src: "{{ tera_state_dir }}/backup/id_ed25519.pub"
+  register: _mariadb_backup_pubkey_raw
+  when:
+    - _mariadb_backup_remote | bool
+    - not ansible_check_mode
+
+- name: Publish the backup SSH public key to the backup_target play
+  ansible.builtin.set_fact:
+    _mariadb_backup_ssh_pubkey: "{{ (_mariadb_backup_pubkey_raw.content | b64decode | trim) if _mariadb_backup_pubkey_raw.content is defined else '' }}"
+  when: _mariadb_backup_remote | bool

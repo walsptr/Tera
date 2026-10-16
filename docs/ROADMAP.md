@@ -84,8 +84,8 @@ Ditutup dengan tag `v0.4.0`.
 
 - [x] Spike: perilaku mariabackup 11.4 di Galera (desync, flow control, clustercheck/HAProxy) — `docs/spikes/2026-10-16-mariabackup-galera.md`
 - [x] ADR 0012 (backup) dan ADR 0013 (restore), disetujui sebelum implementasi
-- [ ] Backup full + incremental, metadata, retensi per rantai, verifikasi, systemd timer
-- [ ] Target penyimpanan: lokal + rsync/ssh ke host backup tulis-saja (role `backup_target`, retensi dan checksum di host backup), gpg untuk salinan remote
+- [x] Backup full + incremental, metadata, retensi per rantai, verifikasi, systemd timer
+- [x] Target penyimpanan: lokal + rsync/ssh ke host backup tulis-saja (role `backup_target`, retensi dan checksum di host backup), gpg untuk salinan remote
 - [ ] Restore standalone dan galera (prechecks ruang disk sebelum service dihentikan, pengiriman dari host backup, standalone → galera dengan override)
 - [ ] Molecule `backup` dan `backup-galera`, plus backup/restore di `standalone-podman` (CI)
 

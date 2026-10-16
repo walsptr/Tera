@@ -1,0 +1,23 @@
+---
+# On-demand backup operations (ADR 0012): tera backup | backup-verify | backup-status.
+# tera_backup_op = run | verify | status.
+- name: MariaDB backup operation
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Check the operation
+      ansible.builtin.assert:
+        that:
+          - tera_backup_op | default('') in ['run', 'verify', 'status']
+        fail_msg: "Jalankan lewat ./tera backup | backup-verify | backup-status -i inventory/<cluster>."
+        quiet: true
+      run_once: true
+
+    - name: Run the backup operation
+      ansible.builtin.include_role:
+        name: mariadb_backup
+        tasks_from: "op_{{ tera_backup_op }}.yml"

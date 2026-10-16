@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Tera backup target "rsync" (ADR 0012): push one backup directory to a write-only backup host.
+# The node's key is limited to `rrsync -wo -no-del <dir>` on the backup host: it can write, but not
+# list, read or delete. Called by tera-backup:
+#   backup-target-rsync push <root> <chain_id>/<backup_name>
+# Environment: TERA_TARGET_ADDRESS, TERA_TARGET_USER, TERA_TARGET_PORT, TERA_TARGET_SSH_KEY,
+# TERA_TARGET_KNOWN_HOSTS.
+set -euo pipefail
+
+[[ $# -eq 3 && "$1" == push ]] || {
+  echo "usage: $0 push <root> <chain_id>/<backup_name>" >&2
+  exit 64
+}
+root=$2
+rel=$3
+
+ssh_cmd="ssh -i ${TERA_TARGET_SSH_KEY} -p ${TERA_TARGET_PORT} -o IdentitiesOnly=yes -o BatchMode=yes"
+ssh_cmd+=" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${TERA_TARGET_KNOWN_HOSTS}"
+dest="${TERA_TARGET_USER}@${TERA_TARGET_ADDRESS}:"
+
+# -R keeps <chain_id>/<backup_name> below the rrsync directory. Metadata goes last: the backup host
+# treats a backup as complete only when tera-backup.json exists and the checksums match.
+rsync -rtR --partial --exclude tera-backup.json --exclude '.pushed-*' -e "$ssh_cmd" "${root}/./${rel}/" "$dest"
+rsync -rtR -e "$ssh_cmd" "${root}/./${rel}/tera-backup.json" "$dest"

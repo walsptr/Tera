@@ -1,0 +1,40 @@
+---
+# mariadb_backup role defaults (ADR 0012). Settings shared with other roles (mariadb_backup_enabled,
+# mariadb_backup_host, mariadb_backup_dir, mariadb_backup_targets, ...) are in roles/tera_defaults.
+
+# systemd OnCalendar expressions (man systemd.time). Default: full on Sunday, incremental on the other
+# days, 01:00 node time, spread by a random delay.
+mariadb_backup_full_schedule: "Sun *-*-* 01:00:00"
+mariadb_backup_incremental_schedule: "Mon..Sat *-*-* 01:00:00"
+mariadb_backup_randomized_delay: 15min
+
+# mariabackup --throttle (I/O operations per second). Empty = off (default). In galera mode throttling
+# also lengthens the BLOCK_DDL desync window, during which the node is out of the HAProxy pool
+# (spike: < 2 s became 25 s).
+mariadb_backup_throttle: ""
+
+# Level-2 verification (unpack, prepare, throwaway mariadbd, CHECK TABLE) after every full, at low
+# priority. Skipped with a warning when the temporary space is not enough.
+mariadb_backup_verify_after_full: true
+mariadb_backup_verify_memory_max: 1G
+
+# gpg public key (armored file on the controller), required when mariadb_backup_targets is not empty:
+# remote copies are always encrypted. The private key never goes to the nodes.
+mariadb_backup_gpg_public_key: ""
+# Encrypt the local copy too (default false: root on the node can read the datadir anyway, and an
+# emergency restore from the local copy must not depend on the private key).
+mariadb_backup_encrypt_local: false
+
+# Galera: allow the backup on the HAProxy writer (single_writer). A backup there causes a failover
+# and cuts sessions when the writer comes back (docs/spikes/2026-10-16-mariabackup-galera.md).
+mariadb_backup_allow_writer: false
+
+
+# Internal: this node takes the backups, and it pushes them to backup hosts.
+_mariadb_backup_active: "{{ (mariadb_backup_enabled | bool) and (inventory_hostname == mariadb_backup_host) }}"
+_mariadb_backup_remote: "{{ (_mariadb_backup_active | bool) and (mariadb_backup_targets | length > 0) }}"
+_mariadb_backup_units:
+  - tera-backup@.service
+  - tera-backup-full.timer
+  - tera-backup-incremental.timer
+  - tera-backup-verify.service

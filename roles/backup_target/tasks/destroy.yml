@@ -1,0 +1,58 @@
+---
+# tera destroy on a backup host: stop the timer and remove what Tera installed for this cluster. The
+# backups themselves stay (ADR 0012).
+- name: Check destroy was confirmed
+  ansible.builtin.assert:
+    that:
+      - tera_destroy_confirm | default(false) | bool
+    fail_msg: "Destroy menghapus data. Jalankan lewat: ./tera destroy -i inventory/<cluster> --yes-i-really-really-mean-it"
+    quiet: true
+
+- name: Show what happens to backups
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: config cluster {{ tera_cluster_name }} dan kunci node-nya dihapus. Backup di
+      {{ mariadb_backup_target_dir }}/{{ tera_cluster_name }} TIDAK dihapus.
+
+- name: Remove the node keys of this cluster
+  ansible.builtin.lineinfile:
+    path: "{{ backup_target_state_dir }}/.ssh/authorized_keys"
+    regexp: " tera:{{ tera_cluster_name | regex_escape }}:"
+    state: absent
+  failed_when: false
+
+- name: Remove the cluster configuration
+  ansible.builtin.file:
+    path: /etc/tera/backup-target/{{ tera_cluster_name }}.json
+    state: absent
+
+- name: Find other clusters on this host
+  ansible.builtin.find:
+    paths: /etc/tera/backup-target
+    patterns: "*.json"
+  register: _backup_target_other
+
+# The timer and scripts serve every cluster on this host: remove them with the last cluster only.
+- name: Remove timer and scripts when no cluster is left
+  when: _backup_target_other.matched == 0
+  block:
+    - name: Stop the timer
+      ansible.builtin.systemd_service:
+        name: tera-backup-target.timer
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove units and scripts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/tera-backup-target.timer
+        - /etc/systemd/system/tera-backup-target.service
+        - /usr/local/sbin/tera-backup-target
+        - /usr/local/lib/tera/tera_backup.py
+
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true

@@ -61,7 +61,7 @@ Wajib di setiap backup, agar restore lintas cluster bisa ditambahkan nanti tanpa
 (`full`/`incremental`), `chain_id`, `sequence`, `parent` (backup sebelumnya di rantai), `started_at` dan
 `finished_at` (UTC), `mariadb_version` (dari `mariadb_backup_info`), `from_lsn`/`to_lsn`, `galera_position`
 (`uuid:seqno` atau `null`), `compression` (`zstd`), `encrypted` + `gpg_fingerprint`, `size_bytes`,
-`sha256`.
+`sha256`, `datadir_size_bytes` (ukuran datadir saat backup; dasar prechecks ruang disk restore).
 
 - Variabel global baru `tera_cluster_name` (default nama folder inventory), dan
   `mariadb_galera_cluster_name` mengikutinya secara default (nilainya sama dengan sekarang).
@@ -97,7 +97,7 @@ Wajib di setiap backup, agar restore lintas cluster bisa ditambahkan nanti tanpa
   - `RandomizedDelaySec={{ mariadb_backup_randomized_delay }}` (default `15min`), `Persistent=true`.
 - Incremental tanpa rantai yang valid (belum ada full, full terakhir gagal, atau ada restore sejak full
   terakhir) otomatis menjadi full.
-- Satu backup per node dalam satu waktu: `flock` pada `/run/tera/mariadb-backup.lock`.
+- Satu backup per node dalam satu waktu: `flock` pada `/run/lock/tera-mariadb-backup.lock` (`mariadb_backup_lock`).
 - `tera backup -i <cluster> [-e mariadb_backup_type=full|incremental]` menjalankan unit yang sama dan
   menunggu hasilnya. `tera backup-status -i <cluster>` menampilkan status.
 - Status terakhir ditulis ke `/etc/tera/mariadb-backup.status` (JSON): per tipe waktu, hasil, id backup,
@@ -168,7 +168,7 @@ Wajib di setiap backup, agar restore lintas cluster bisa ditambahkan nanti tanpa
   - unit `tera-backup-verify.service` dengan `Nice=19`, `IOSchedulingClass=idle`, dan
     `MemoryMax={{ mariadb_backup_verify_memory_max }}` (default `1G`);
   - bongkar stream ke `<mariadb_backup_dir>/.verify/`, prepare full lalu incremental berurutan, nyalakan
-    `mariadbd --no-defaults --skip-networking --socket=<tmp>`, cek bahwa setiap tabel bisa dibuka dan
+    `mariadbd --no-defaults --skip-networking --user=root --socket=<tmp>`, cek bahwa setiap tabel bisa dibuka dan
     `CHECK TABLE` lulus, lalu hapus direktori sementara;
   - jika ruang sementara tidak cukup, verifikasi dilewati dengan status `warning` (backup tidak dibatalkan);
   - backup lokal terenkripsi (`mariadb_backup_encrypt_local: true`) tidak bisa diverifikasi otomatis karena
@@ -226,3 +226,9 @@ Wajib di setiap backup, agar restore lintas cluster bisa ditambahkan nanti tanpa
   host backup tulis-saja (`rrsync -wo -no-del`) dengan retensi dan verifikasi checksum di host backup,
   verifikasi level 2 otomatis setelah full dengan prioritas rendah, tanpa `--throttle` secara default, jendela
   desync hanya di `BLOCK_DDL`, dan penghentian backup selama restore.
+- 2026-10-16: erratum saat implementasi (keputusan tidak berubah): path lock menjadi
+  `/run/lock/tera-mariadb-backup.lock`; metadata menambah `datadir_size_bytes`; `mariadbd` sementara untuk
+  verifikasi berjalan sebagai root (`--user=root`) di salinan root-only tanpa jaringan, sehingga pohon backup
+  tidak perlu dibuka untuk user `mysql`; `galera_position` bernilai `null`, karena mariabackup
+  11.4 tidak menulis `mariadb_backup_galera_info` ke `--extra-lsndir` (file itu tetap ada di dalam stream; restore
+  tidak membutuhkannya karena membuat cluster dengan UUID baru).

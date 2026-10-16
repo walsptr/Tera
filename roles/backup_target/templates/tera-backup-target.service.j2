@@ -1,0 +1,10 @@
+# Managed by Tera - JANGAN edit manual (ADR 0012): checksum checks and retention on the backup host.
+[Unit]
+Description=Tera backup host checks and retention
+
+[Service]
+Type=oneshot
+User={{ mariadb_backup_target_user }}
+ExecStart=/usr/local/sbin/tera-backup-target run
+Nice=10
+IOSchedulingClass=idle

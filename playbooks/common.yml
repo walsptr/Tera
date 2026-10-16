@@ -1,6 +1,6 @@
 ---
 - name: Apply common role
-  hosts: mariadb:loadbalancer
+  hosts: mariadb:loadbalancer:mariadb_backup_target
   become: true
   gather_facts: false
   any_errors_fatal: true

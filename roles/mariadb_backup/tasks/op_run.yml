@@ -1,0 +1,44 @@
+---
+# tera backup [-e mariadb_backup_type=full|incremental]: start the same systemd unit as the timer and
+# wait for it (Type=oneshot).
+- name: Check backups are enabled
+  ansible.builtin.assert:
+    that:
+      - mariadb_backup_enabled | bool
+      - (mariadb_backup_type | default('full')) in ['full', 'incremental']
+    fail_msg: >-
+      Backup belum aktif (mariadb_backup_enabled: false) atau mariadb_backup_type bukan full/incremental.
+      Aktifkan di group_vars/all/tera.yml lalu jalankan ./tera reconfigure -i inventory/<cluster>.
+    quiet: true
+  run_once: true
+
+# systemctl start (not the systemd module): the oneshot must run now, and its exit status is the result.
+- name: Run the backup # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: systemctl start tera-backup@{{ mariadb_backup_type | default('full') }}.service
+  register: _mariadb_backup_run
+  changed_when: true
+  failed_when: false
+  when: inventory_hostname == mariadb_backup_host
+
+- name: Read the backup log
+  ansible.builtin.command:
+    cmd: journalctl -u tera-backup@{{ mariadb_backup_type | default('full') }}.service -n 20 --no-pager -o cat
+  register: _mariadb_backup_journal
+  changed_when: false
+  when: inventory_hostname == mariadb_backup_host
+
+- name: Show the result
+  ansible.builtin.debug:
+    msg: "{{ _mariadb_backup_journal.stdout_lines | select('match', '^tera-backup:') | list }}"
+  when: inventory_hostname == mariadb_backup_host
+
+- name: Check the backup succeeded
+  ansible.builtin.assert:
+    that:
+      - _mariadb_backup_run.rc == 0
+    fail_msg: >-
+      Backup di {{ inventory_hostname }} gagal atau push ke host backup gagal (lihat pesan di atas,
+      journalctl -u tera-backup@{{ mariadb_backup_type | default('full') }} dan ./tera backup-status).
+    quiet: true
+  when: inventory_hostname == mariadb_backup_host

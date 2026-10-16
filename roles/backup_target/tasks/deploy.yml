@@ -1,0 +1,126 @@
+---
+# Backup host (ADR 0012). Every backup node of this cluster gets its own directory and an
+# authorized_keys entry limited to `rrsync -wo -no-del <dir>/<cluster>/<node>` from its address: it
+# can write, but not list, read or delete. Checks and retention run here (tera-backup-target).
+- name: Run prechecks
+  ansible.builtin.import_tasks: prechecks.yml
+
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Install backup host packages
+  ansible.builtin.package:
+    name: "{{ _backup_target_packages }}"
+    state: present
+
+- name: Create the backup user
+  ansible.builtin.user:
+    name: "{{ mariadb_backup_target_user }}"
+    system: true
+    home: "{{ backup_target_state_dir }}"
+    create_home: true
+    shell: /bin/sh
+    password: "!"
+
+- name: Create backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ mariadb_backup_target_user }}"
+    group: "{{ mariadb_backup_target_user }}"
+    mode: "0750"
+  loop: "{{ [mariadb_backup_target_dir, mariadb_backup_target_dir ~ '/' ~ tera_cluster_name, backup_target_state_dir ~ '/state']
+            + (_backup_target_nodes | map('regex_replace', '^', mariadb_backup_target_dir ~ '/' ~ tera_cluster_name ~ '/') | list) }}"
+
+- name: Authorize backup nodes (write only)
+  ansible.posix.authorized_key:
+    user: "{{ mariadb_backup_target_user }}"
+    key: "{{ hostvars[item]['_mariadb_backup_ssh_pubkey'] }}"
+    key_options: 'command="/usr/bin/rrsync -wo -no-del {{ _dir }}",restrict,from="{{ _from }}"'
+    comment: tera:{{ tera_cluster_name }}:{{ item }}
+    state: present
+  vars:
+    _dir: "{{ mariadb_backup_target_dir }}/{{ tera_cluster_name }}/{{ item }}"
+    # Node address as seen by this host; override per node with mariadb_backup_source_address.
+    _from: "{{ hostvars[item]['mariadb_backup_source_address'] | default(hostvars[item]['tera_listen_address']) }}"
+  loop: "{{ _backup_target_nodes }}"
+  when: hostvars[item]['_mariadb_backup_ssh_pubkey'] | default('') | length > 0
+
+- name: Create the configuration directory
+  ansible.builtin.file:
+    path: /etc/tera/backup-target
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the cluster configuration
+  ansible.builtin.copy:
+    content: "{{ _backup_target_config | to_nice_json(sort_keys=true) }}\n"
+    dest: /etc/tera/backup-target/{{ tera_cluster_name }}.json
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    _backup_target_config:
+      cluster: "{{ tera_cluster_name }}"
+      dir: "{{ mariadb_backup_target_dir }}"
+      state_dir: "{{ backup_target_state_dir }}/state"
+      keep_full: "{{ mariadb_backup_keep_full | int }}"
+
+- name: Create the library directory
+  ansible.builtin.file:
+    path: /usr/local/lib/tera
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the shared backup library
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../mariadb_backup/files/tera_backup.py"
+    dest: /usr/local/lib/tera/tera_backup.py
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install tera-backup-target
+  ansible.builtin.copy:
+    src: tera_backup_target.py
+    dest: /usr/local/sbin/tera-backup-target
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - tera-backup-target.service
+    - tera-backup-target.timer
+  register: _backup_target_units
+
+- name: Reload systemd after unit changes # noqa: no-handler
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: _backup_target_units is changed
+
+- name: Enable the check and retention timer
+  ansible.builtin.systemd_service:
+    name: tera-backup-target.timer
+    state: started
+    enabled: true
+
+# Read by the mariadb_backup play: the nodes pin this host key (no StrictHostKeyChecking=no).
+- name: Read the SSH host key
+  ansible.builtin.slurp:
+    src: /etc/ssh/ssh_host_ed25519_key.pub
+  register: _backup_target_host_key_raw
+
+- name: Publish the SSH host key
+  ansible.builtin.set_fact:
+    _backup_target_host_key: "{{ (_backup_target_host_key_raw.content | b64decode).split()[:2] | join(' ') }}"

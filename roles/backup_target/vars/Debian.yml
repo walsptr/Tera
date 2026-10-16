@@ -1,0 +1,5 @@
+---
+# rrsync is part of the rsync package on Ubuntu.
+_backup_target_packages:
+  - rsync
+  - python3

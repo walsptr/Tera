@@ -11,10 +11,6 @@ mariadb_repo_rpm_key_url: https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB
 
 mariadb_packages_extra: []
 
-# Data directory, read by the SST overwrite guard and `tera recover` (grastate.dat). Tera does not
-# set datadir in 99-tera.cnf; if custom config changes it, set this too.
-mariadb_datadir: /var/lib/mysql
-
 # --- Galera -----------------------------------------------------------------
 # SST user (mariabackup), password from mariadb_sst_password (passwords.yml). The credentials
 # are written to 98-tera-sst.cnf, never to 99-tera.cnf.

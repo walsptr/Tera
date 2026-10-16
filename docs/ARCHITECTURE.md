@@ -13,8 +13,9 @@
 tera                                  # CLI bash
 ansible.cfg  requirements.yml  requirements-dev.txt  site.yml  .gitignore
 .ansible-lint  .yamllint  pyproject.toml  .github/workflows/ci.yml
-playbooks/{facts,common,mariadb,loadbalancer,mariadb-recover,destroy}.yml
-plugins/filter/{merge_ini,tera_ip}.py   plugins/tests/test_{merge_ini,tera_ip}.py   # tests outside filter/: Ansible loads filter subdirs as plugins
+playbooks/{facts,common,mariadb,loadbalancer,backup,mariadb-recover,mariadb-backup,destroy}.yml
+playbooks/tasks/listen_address.yml     # tera_listen_address, dipakai facts.yml
+plugins/filter/{merge_ini,tera_ip}.py   plugins/tests/test_{merge_ini,tera_ip,tera_backup}.py   # tests outside filter/: Ansible loads filter subdirs as plugins
 roles/tera_defaults/defaults/main.yml
 roles/common/tasks/{prechecks,deploy,reconfigure}.yml
 roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
@@ -22,9 +23,12 @@ roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
   tasks internal:    vars install firewall config status standalone galera users clustercheck selinux wait_synced
   templates:         tera.cnf.j2 tera-clustercheck.j2 tera-clustercheck.socket.j2 tera-clustercheck@.service.j2
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
+roles/mariadb_backup/{defaults,vars,templates,files/{tera_backup.py,backup-target-rsync}}   # ADR 0012
+  tasks entry point: prechecks deploy reconfigure destroy keys op_{run,verify,status}
+roles/backup_target/{defaults,vars,templates,files/tera_backup_target.py,tasks/{prechecks,deploy,reconfigure,destroy}.yml}
 inventory/sample/{hosts.yml,group_vars/all/{tera.yml,passwords.yml},config/{mariadb,haproxy/conf.d,keepalived}}
 docs/
-molecule/{shared,standalone,standalone-podman,galera,reconfigure,recover,recover-poweroff}/   # shared = playbook dan task bersama
+molecule/{shared,standalone,standalone-podman,galera,reconfigure,recover,recover-poweroff,loadbalancer,destroy,backup,backup-galera}/   # shared = playbook dan task bersama
 ```
 
 ## Inventory cluster
@@ -42,12 +46,15 @@ Group:
 
 - `mariadb` — mode standalone: tepat 1 host; mode galera: >= `mariadb_galera_min_nodes` (default 3).
 - `loadbalancer` — opsional, boleh berisi host yang sama dengan node `mariadb` (colocated).
+- `mariadb_backup_target` — opsional, host backup untuk salinan remote (ADR 0012). Node backup hanya bisa
+  menulis ke sana (`rrsync -wo -no-del`); retensi dan pemeriksaan checksum berjalan di host itu.
 
 Host var opsional: `ip` (alamat yang dipakai Tera untuk listen dan komunikasi antar node).
 
 Nilai yang wajib unik per cluster dan divalidasi di prechecks:
 
-- `mariadb_galera_cluster_name` (default: nama folder cluster)
+- `tera_cluster_name` (default: nama folder cluster; dipakai metadata dan path backup, dan default
+  `mariadb_galera_cluster_name`)
 - `tera_vip_address`
 - `keepalived_virtual_router_id`
 
@@ -62,6 +69,9 @@ Nilai yang wajib unik per cluster dan divalidasi di prechecks:
 | `reconfigure -i` | `site.yml` | `reconfigure` |
 | `recover -i [-e mariadb_recover_from=<node>]` | `playbooks/mariadb-recover.yml` | – |
 | `destroy -i … --yes-i-really-really-mean-it [--keep-data]` | `playbooks/destroy.yml` (`-e tera_destroy_confirm=true`, `--keep-data` → `-e tera_destroy_keep_data=true`) | – |
+| `backup -i [--incremental]` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=run -e mariadb_backup_type=full\|incremental`) | – |
+| `backup-verify -i` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=verify`) | – |
+| `backup-status -i` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=status`) | – |
 
 Perilaku CLI:
 
@@ -74,18 +84,22 @@ Perilaku CLI:
   dan YAML. Key top-level dianggap kosong jika nilainya kosong, `""`, `''`, `~`, atau `null` dan baris
   berikutnya tidak menjorok (bukan parent mapping/list). File yang terenkripsi vault ditolak.
 - `new-cluster <nama>` membuat `inventory/<nama>` (nama: huruf, angka, `.`, `_`, `-`) dan menolak jika sudah ada.
-- `destroy` ditolak tanpa flag `--yes-i-really-really-mean-it`. `--keep-data` hanya diterima oleh `destroy`.
+- `destroy` ditolak tanpa flag `--yes-i-really-really-mean-it`. `--keep-data` hanya diterima oleh `destroy`,
+  `--incremental` hanya oleh `backup`.
 
 ## Alur play `site.yml`
 
 | # | Play | Hosts | Catatan |
 |---|---|---|---|
 | 1 | Validate | localhost | ansible-core >= 2.16, `tera_action` valid |
-| 2 | Facts | `mariadb:loadbalancer` | `set_fact: tera_listen_address` |
-| 3 | Common | `mariadb:loadbalancer` | paket dasar |
+| 2 | Facts | `mariadb:loadbalancer:mariadb_backup_target` | `set_fact: tera_listen_address` |
+| 3 | Common | `mariadb:loadbalancer:mariadb_backup_target` | paket dasar |
 | 4 | MariaDB | `mariadb` | install, config, start/bootstrap/join, users |
-| 5 | Rolling restart | `mariadb`, `serial: 1` | hanya node `mariadb_restart_required` |
+| 5 | Rolling restart | `mariadb`, `serial: 1` | hanya node `mariadb_restart_required`; restart di bawah lock backup |
 | 6 | Load balancer | `loadbalancer` | hanya jika `tera_lb_enabled` |
+| 7 | Backup keys | `mariadb` | kunci SSH node backup (hanya jika ada target remote) |
+| 8 | Backup target | `mariadb_backup_target` | user, direktori, `authorized_keys` tulis-saja, timer retensi; publikasi host key |
+| 9 | MariaDB backup | `mariadb` | alat, script, config, `known_hosts`, timer di `mariadb_backup_host`; peringatan jika backup mati |
 
 Setiap play memuat role `tera_defaults` dan memakai `any_errors_fatal: true`.
 
@@ -96,6 +110,8 @@ Setiap play memuat role `tera_defaults` dan memakai `any_errors_fatal: true`.
 | common | OS | prechecks + paket | prechecks |
 | mariadb | topologi, password, OS | prechecks, install, config, start/bootstrap/join, users, clustercheck | prechecks, config, users, clustercheck |
 | loadbalancer | VIP, VRID, password | prechecks, install, config, start | prechecks, config + reload |
+| mariadb_backup | node backup, writer, target, public key | prechecks, alat, script, config, timer | sama dengan deploy |
+| backup_target | OS, direktori | prechecks, paket, user, kunci node, timer | sama dengan deploy |
 
 ## Nilai lintas host
 
@@ -118,6 +134,16 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `mariadb_restart_marker` | `{{ tera_state_dir }}/mariadb-restart-pending` |
 | `mariadb_galera_marker` | `{{ tera_state_dir }}/mariadb-galera.bootstrapped` |
 | `mariadb_datadir_marker` | `{{ tera_state_dir }}/mariadb-datadir.initialized` |
+| `mariadb_restore_marker` | `{{ tera_state_dir }}/mariadb-restore.active` (backup menolak berjalan selama ada) |
+| `tera_cluster_name` | nama folder inventory |
+| `mariadb_datadir` | `/var/lib/mysql` (dibaca pengaman SST, `tera recover`, backup, dan restore; samakan jika custom config mengubah datadir) |
+| `mariadb_backup_enabled` | `false` (opt-in; deploy/reconfigure memberi peringatan selama `false`) |
+| `mariadb_backup_host` | `groups['mariadb'][-1]` (galera: writer ditolak kecuali `mariadb_backup_allow_writer`) |
+| `mariadb_backup_dir` | `/var/backups/tera/mariadb` (disarankan disk terpisah; tidak pernah dihapus `tera destroy`) |
+| `mariadb_backup_keep_full` | `2` (retensi per jumlah rantai, di node dan host backup) |
+| `mariadb_backup_targets` | `[]` (`[{name, type: rsync, host, port}]`; host di group `mariadb_backup_target`) |
+| `mariadb_backup_lock` / `mariadb_backup_lock_timeout` | `/run/lock/tera-mariadb-backup.lock` / `7200` (rolling restart dan restore menunggu backup) |
+| `mariadb_backup_target_dir` / `mariadb_backup_target_user` | `/srv/tera-backup` / `tera-backup` |
 | `tera_network_interface` | `""` |
 | `mariadb_cluster_mode` | `standalone` |
 | `mariadb_version` | `"11.4"` |
@@ -155,10 +181,22 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_galera_allow_sst_overwrite` | `false` (lihat prasyarat deploy di `GALERA-LIFECYCLE.md`) |
 | `mariadb_clustercheck_user` | `tera_clustercheck` (`@localhost`, tanpa privilege; password dari `mariadb_clustercheck_password`) |
 | `mariadb_recover_from` | `""` (`tera recover`: paksa node bootstrap; kosong = otomatis) |
-| `mariadb_datadir` | `/var/lib/mysql` (dibaca pengaman SST dan `tera recover`; samakan jika custom config mengubah datadir) |
 | `tera_manage_firewall` | `true` (`false` = Tera tidak pernah menyentuh firewalld) |
 | `mariadb_firewall_manage` | `true` (kedua mode, hanya jika firewalld berjalan; ADR 0011) |
 | `mariadb_selinux_permissive` | `false` (`true` = domain `mysqld_t` permissive; tidak disarankan) |
+
+Variabel role `mariadb_backup` (`roles/mariadb_backup/defaults/main.yml`, ADR 0012):
+
+| Variabel | Default |
+|---|---|
+| `mariadb_backup_full_schedule` / `mariadb_backup_incremental_schedule` | `Sun *-*-* 01:00:00` / `Mon..Sat *-*-* 01:00:00` (systemd `OnCalendar`) |
+| `mariadb_backup_randomized_delay` | `15min` |
+| `mariadb_backup_throttle` | `""` (mati; jika diisi, jendela desync galera ikut memanjang) |
+| `mariadb_backup_verify_after_full` / `mariadb_backup_verify_memory_max` | `true` / `1G` |
+| `mariadb_backup_gpg_public_key` | `""` (wajib jika ada target remote atau `mariadb_backup_encrypt_local`) |
+| `mariadb_backup_encrypt_local` | `false` |
+| `mariadb_backup_allow_writer` | `false` |
+| `mariadb_backup_source_address` | (opsional, host var) alamat node yang dilihat host backup untuk `from=`; default `tera_listen_address` |
 
 
 ## Topologi HA
@@ -250,6 +288,9 @@ di deploy, reconfigure, dan destroy, untuk role `mariadb` maupun `loadbalancer`.
 | HAProxy | `/etc/haproxy/haproxy.cfg` (`0640 root:haproxy`, berisi password stats) |
 | Keepalived | `/etc/keepalived/keepalived.conf` (`0640 root:root`, berisi `auth_pass`) |
 | Sysctl load balancer | `/etc/sysctl.d/90-tera-loadbalancer.conf` (`net.ipv4.ip_nonlocal_bind = 1`) |
+| Backup (semua node MariaDB) | `/usr/local/sbin/tera-backup`, `/usr/local/lib/tera/backup-targets/rsync`, `/etc/tera/backup/config.json` (`0600 root`), `mariadb_backup_dir` (`0700 root`) |
+| Backup (node backup) | unit `tera-backup@.service`, `tera-backup-{full,incremental}.timer`, `tera-backup-verify.service`; kunci SSH `/etc/tera/backup/id_ed25519`, `known_hosts`, keyring public key `/etc/tera/backup/gnupg`, status `/etc/tera/mariadb-backup.status` (JSON, kontrak untuk exporter Fase 4b) |
+| Host backup | user `tera-backup`, `mariadb_backup_target_dir/<cluster>/<node>/`, state verifikasi `/var/lib/tera-backup-target/state/` (di luar jangkauan node), `/etc/tera/backup-target/<cluster>.json`, `tera-backup-target.{service,timer}` |
 
 Semua file yang dirender Tera diberi header "Managed by Tera".
 
@@ -272,6 +313,9 @@ meninggalkan file kosong atau terpotong. Restart pending marker di-`sync` sebelu
 5. Dengan `--keep-data`: datadir dan marker datadir dipertahankan; di mode galera marker bootstrap juga dipertahankan, sehingga
    deploy berikutnya gagal dengan arahan ke `tera recover`, yang memilih node dari `grastate.dat` (ADR 0006).
    Di mode standalone deploy berikutnya langsung memakai datadir lama.
+
+6. Backup: timer, unit, script, dan `/etc/tera/backup` dihapus. Isi `mariadb_backup_dir` di node dan backup di
+   host backup **tidak pernah dihapus** (juga tanpa `--keep-data`); ringkasan menyebut lokasinya.
 
 Paket, repo MariaDB, dan boolean SELinux `haproxy_connect_any` tidak disentuh.
 

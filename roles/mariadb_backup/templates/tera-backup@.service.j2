@@ -1,0 +1,9 @@
+# Managed by Tera - JANGAN edit manual (ADR 0012). %i = full | incremental.
+# Exit 1 = backup failed, 2 = local backup OK but a push failed: both leave the unit failed.
+[Unit]
+Description=Tera MariaDB backup (%i)
+After=mariadb.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tera-backup run %i

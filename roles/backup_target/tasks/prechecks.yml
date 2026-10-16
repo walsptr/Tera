@@ -1,0 +1,11 @@
+---
+- name: Check backup host settings
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] in ['Debian', 'RedHat']
+      - mariadb_backup_target_dir is match('^/')
+      - mariadb_backup_target_user | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} (group mariadb_backup_target): OS harus Ubuntu/EL9, mariadb_backup_target_dir path
+      absolut, dan mariadb_backup_target_user tidak kosong.
+    quiet: true

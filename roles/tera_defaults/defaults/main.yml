@@ -9,6 +9,10 @@ tera_valid_actions:
   - deploy
   - reconfigure
 
+# Cluster name: backup metadata and paths (ADR 0012), default wsrep_cluster_name. Default: the name of
+# the inventory folder (inventory/prod-a -> prod-a).
+tera_cluster_name: "{{ inventory_dir | basename }}"
+
 # --- Paths ------------------------------------------------------------------
 # Custom config directory on the controller (absolute; see docs/CUSTOM-CONFIG.md).
 tera_config_dir: "{{ inventory_dir }}/config"
@@ -49,13 +53,16 @@ haproxy_stats_port: 8404
 mariadb_cluster_mode: standalone # standalone | galera
 mariadb_version: "11.4"
 mariadb_port: 3306
+# Data directory, read by the SST overwrite guard, `tera recover` (grastate.dat), backups and restore.
+# Tera does not set datadir in 99-tera.cnf; if custom config changes it, set this too.
+mariadb_datadir: /var/lib/mysql
 # Sources allowed to reach mariadb_port when Tera manages firewalld (ADR 0011): IPv4 or CIDR.
 # Default open to everyone. Also used for the VIP port on the load balancers.
 mariadb_client_sources:
   - 0.0.0.0/0
 mariadb_bootstrap_host: "{{ groups['mariadb'][0] }}"
 mariadb_galera_min_nodes: 3
-mariadb_galera_cluster_name: "{{ inventory_dir | basename }}"
+mariadb_galera_cluster_name: "{{ tera_cluster_name }}"
 mariadb_clustercheck_port: 9200
 mariadb_clustercheck_available_when_donor: false
 mariadb_lb_mode: single_writer # single_writer | multi_writer
@@ -65,3 +72,30 @@ mariadb_lb_mode: single_writer # single_writer | multi_writer
 mariadb_wait_retries: 120
 mariadb_wait_delay: 5
 mariadb_port_timeout: 300
+
+# --- Backup (ADR 0012/0013) -------------------------------------------------
+# Shared by the mariadb (rolling restart, restore), mariadb_backup and backup_target roles; the other
+# backup settings are in roles/mariadb_backup/defaults/main.yml.
+# Opt-in: false = no timers; deploy and reconfigure warn that backups are off.
+mariadb_backup_enabled: false
+# Node that takes the backups. Galera: the last node (a backup server in HAProxy single_writer); the
+# writer (first node) is refused unless mariadb_backup_allow_writer.
+mariadb_backup_host: "{{ groups['mariadb'][-1] }}"
+# Local backups (recommended: a disk other than the datadir). Never removed by tera destroy.
+mariadb_backup_dir: /var/backups/tera/mariadb
+# Retention by number of chains (one full + its incrementals), never by age (ADR 0012).
+mariadb_backup_keep_full: 2
+# Off-node copies, always gpg encrypted. Phase 4a type: rsync to a host in group mariadb_backup_target.
+#   - name: bk           # unique name
+#     type: rsync
+#     host: backup01     # inventory host in group mariadb_backup_target
+#     port: 22           # optional
+mariadb_backup_targets: []
+# Held by a running backup; the rolling restart and tera restore wait for it (seconds).
+mariadb_backup_lock: /run/lock/tera-mariadb-backup.lock
+mariadb_backup_lock_timeout: 7200
+# Written by tera restore on every node; backups refuse to run while it exists.
+mariadb_restore_marker: "{{ tera_state_dir }}/mariadb-restore.active"
+# Backup host (role backup_target): directory and the user the nodes write as (rrsync -wo -no-del).
+mariadb_backup_target_dir: /srv/tera-backup
+mariadb_backup_target_user: tera-backup

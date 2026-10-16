@@ -10,3 +10,6 @@
 
 - name: Import loadbalancer playbook
   ansible.builtin.import_playbook: playbooks/loadbalancer.yml
+
+- name: Import backup playbook
+  ansible.builtin.import_playbook: playbooks/backup.yml

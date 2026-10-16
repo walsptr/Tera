@@ -1,0 +1,12 @@
+# Managed by Tera - JANGAN edit manual (ADR 0012).
+[Unit]
+Description=Tera MariaDB incremental backup
+
+[Timer]
+OnCalendar={{ mariadb_backup_incremental_schedule }}
+RandomizedDelaySec={{ mariadb_backup_randomized_delay }}
+Persistent=true
+Unit=tera-backup@incremental.service
+
+[Install]
+WantedBy=timers.target

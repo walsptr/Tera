@@ -1,0 +1,225 @@
+---
+# Backups (ADR 0012). Tools, script and config go to every mariadb node (tera restore prepares the
+# chain on the restore node); timers only on mariadb_backup_host when mariadb_backup_enabled.
+- name: Run prechecks
+  ansible.builtin.import_tasks: prechecks.yml
+
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Install backup tools
+  ansible.builtin.package:
+    name: "{{ _mariadb_backup_packages }}"
+    state: present
+
+- name: Create backup directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ mariadb_backup_dir }}", mode: "0700"}
+    - {path: "{{ tera_state_dir }}/backup", mode: "0700"}
+    - {path: /usr/local/lib/tera/backup-targets, mode: "0755"}
+  loop_control:
+    label: "{{ item.path }}"
+
+# The throwaway mariadbd of verify and restore runs on unpacked copies below these directories.
+- name: Label verify and restore directories for mysqld (SELinux)
+  community.general.sefcontext:
+    target: "{{ mariadb_backup_dir }}/{{ item }}(/.*)?"
+    setype: mysqld_db_t
+    state: present
+  loop:
+    - .verify
+    - .restore
+    - .incoming
+  when:
+    - ansible_facts['os_family'] == 'RedHat'
+    - (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+
+- name: Install tera-backup
+  ansible.builtin.copy:
+    src: tera_backup.py
+    dest: /usr/local/sbin/tera-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install backup target scripts
+  ansible.builtin.copy:
+    src: backup-target-rsync
+    dest: /usr/local/lib/tera/backup-targets/rsync
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the gpg public key
+  ansible.builtin.copy:
+    src: "{{ mariadb_backup_gpg_public_key }}"
+    dest: "{{ tera_state_dir }}/backup/backup.pub.asc"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - _mariadb_backup_active | bool
+    - mariadb_backup_gpg_public_key | length > 0
+
+# Read-only gpg calls run in --check too (check_mode: false), so config.json shows no false diff.
+- name: Manage the gpg keyring
+  when:
+    - _mariadb_backup_active | bool
+    - mariadb_backup_gpg_public_key | length > 0
+  block:
+    - name: Create a temporary gpg home
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: tera-gpg.
+      register: _mariadb_backup_gpg_tmp
+      check_mode: false
+      changed_when: false
+
+    - name: Read the public key fingerprint
+      ansible.builtin.command:
+        cmd: >-
+          gpg --homedir {{ _mariadb_backup_gpg_tmp.path }} --batch --with-colons --import-options show-only --import
+        stdin: "{{ lookup('ansible.builtin.file', mariadb_backup_gpg_public_key) }}"
+      register: _mariadb_backup_gpg_show
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Remember the fingerprint
+      ansible.builtin.set_fact:
+        _mariadb_backup_gpg_fpr: >-
+          {{ (_mariadb_backup_gpg_show.stdout_lines | select('match', '^fpr:') | first).split(':')[9] }}
+
+    - name: List the keyring
+      ansible.builtin.command:
+        cmd: gpg --homedir {{ tera_state_dir }}/backup/gnupg --batch --with-colons --list-keys
+      register: _mariadb_backup_gpg_list
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Create the keyring directory
+      ansible.builtin.file:
+        path: "{{ tera_state_dir }}/backup/gnupg"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Import the public key
+      ansible.builtin.command:
+        cmd: gpg --homedir {{ tera_state_dir }}/backup/gnupg --batch --import {{ tera_state_dir }}/backup/backup.pub.asc
+      changed_when: true
+      when: (':' ~ _mariadb_backup_gpg_fpr ~ ':') not in _mariadb_backup_gpg_list.stdout
+
+  always:
+    - name: Remove the temporary gpg home
+      ansible.builtin.file:
+        path: "{{ _mariadb_backup_gpg_tmp.path }}"
+        state: absent
+      check_mode: false
+      changed_when: false
+      when: _mariadb_backup_gpg_tmp.path is defined
+
+- name: Write known_hosts for backup hosts
+  ansible.builtin.copy:
+    content: |
+      {% for t in mariadb_backup_targets %}
+      {% set addr = hostvars[t.host]['tera_listen_address'] %}
+      {{ addr if (t.port | default(22) | int) == 22 else '[' ~ addr ~ ']:' ~ t.port }} {{ hostvars[t.host]['_backup_target_host_key'] | default('') }}
+      {% endfor %}
+    dest: "{{ tera_state_dir }}/backup/known_hosts"
+    owner: root
+    group: root
+    mode: "0600"
+  when: _mariadb_backup_remote | bool
+
+- name: Reset the target list for tera-backup
+  ansible.builtin.set_fact:
+    _mariadb_backup_targets_rendered: []
+
+- name: Build the target list for tera-backup
+  ansible.builtin.set_fact:
+    _mariadb_backup_targets_rendered: >-
+      {{ _mariadb_backup_targets_rendered | default([])
+         + [{'name': item.name, 'type': item.type, 'address': hostvars[item.host]['tera_listen_address'],
+             'port': item.port | default(22) | int, 'user': mariadb_backup_target_user}] }}
+  loop: "{{ mariadb_backup_targets if (_mariadb_backup_active | bool) else [] }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Write tera-backup config
+  ansible.builtin.copy:
+    content: "{{ _mariadb_backup_config | to_nice_json(sort_keys=true) }}\n"
+    dest: "{{ tera_state_dir }}/backup/config.json"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    _mariadb_backup_config:
+      cluster: "{{ tera_cluster_name }}"
+      host: "{{ inventory_hostname }}"
+      mode: "{{ mariadb_cluster_mode }}"
+      backup_dir: "{{ mariadb_backup_dir }}"
+      datadir: "{{ mariadb_datadir }}"
+      status_path: "{{ tera_state_dir }}/mariadb-backup.status"
+      lock_path: "{{ mariadb_backup_lock }}"
+      restore_marker: "{{ mariadb_restore_marker }}"
+      needs_full_path: "{{ tera_state_dir }}/backup/needs-full"
+      keep_full: "{{ mariadb_backup_keep_full | int }}"
+      throttle: "{{ (mariadb_backup_throttle | int) if (mariadb_backup_throttle | string | length > 0) else none }}"
+      encrypt_local: "{{ mariadb_backup_encrypt_local | bool }}"
+      gpg_homedir: "{{ tera_state_dir }}/backup/gnupg"
+      gpg_fingerprint: "{{ _mariadb_backup_gpg_fpr | default(none) }}"
+      ssh_key: "{{ tera_state_dir }}/backup/id_ed25519"
+      known_hosts: "{{ tera_state_dir }}/backup/known_hosts"
+      target_bin_dir: /usr/local/lib/tera/backup-targets
+      targets: "{{ _mariadb_backup_targets_rendered | default([]) }}"
+      verify_after_full: "{{ mariadb_backup_verify_after_full | bool }}"
+      verify_unit: tera-backup-verify.service
+
+- name: Install systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ _mariadb_backup_units }}"
+  register: _mariadb_backup_units_write
+  when: _mariadb_backup_active | bool
+
+- name: Remove systemd units from nodes that do not take backups
+  ansible.builtin.include_tasks: units_remove.yml
+  when: not (_mariadb_backup_active | bool)
+
+- name: Reload systemd after unit changes # noqa: no-handler
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: _mariadb_backup_units_write is changed
+
+- name: Enable backup timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - tera-backup-full.timer
+    - tera-backup-incremental.timer
+  when: _mariadb_backup_active | bool
+
+- name: Warn that backups are off
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: backup belum aktif (mariadb_backup_enabled: false). Cluster ini tidak punya backup terjadwal.
+      Aktifkan di group_vars/all/tera.yml (mariadb_backup_enabled: true; disarankan juga mariadb_backup_targets
+      dan mariadb_backup_gpg_public_key), lalu jalankan ./tera reconfigure -i inventory/<cluster>. Lihat README,
+      bagian Backup.
+  run_once: true
+  when: not (mariadb_backup_enabled | bool)

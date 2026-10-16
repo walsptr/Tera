@@ -4,10 +4,36 @@
 - name: Load variables
   ansible.builtin.import_tasks: vars.yml
 
+# Under the backup lock (ADR 0012): waits for a running backup, and no backup starts during the
+# restart. flock exits 75 when mariadb_backup_lock_timeout runs out.
 - name: Restart MariaDB
-  ansible.builtin.systemd_service:
-    name: "{{ _mariadb_service }}"
-    state: restarted
+  ansible.builtin.command:
+    cmd: >-
+      flock -w {{ mariadb_backup_lock_timeout }} -E 75 {{ mariadb_backup_lock }}
+      systemctl restart {{ _mariadb_service }}
+  register: _mariadb_restart
+  changed_when: true
+  failed_when: false
+
+- name: Check the restart was not blocked by a backup
+  ansible.builtin.assert:
+    that:
+      - _mariadb_restart.rc | default(0) != 75
+    fail_msg: >-
+      {{ inventory_hostname }}: restart MariaDB menunggu backup yang sedang berjalan lebih dari
+      {{ mariadb_backup_lock_timeout }} detik ({{ mariadb_backup_lock }} masih dipegang; lihat
+      systemctl status 'tera-backup@*'). Node lain belum di-restart. Tunggu backup selesai lalu ulangi run yang
+      sama, atau naikkan mariadb_backup_lock_timeout.
+    quiet: true
+
+- name: Check MariaDB restarted
+  ansible.builtin.assert:
+    that:
+      - _mariadb_restart.rc | default(0) == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: systemctl restart {{ _mariadb_service }} gagal (rc={{ _mariadb_restart.rc }}):
+      {{ _mariadb_restart.stderr | default('') }}. Periksa journalctl -u {{ _mariadb_service }}.
+    quiet: true
 
 - name: Wait for MariaDB port
   ansible.builtin.wait_for:

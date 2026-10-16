@@ -1,0 +1,11 @@
+# Managed by Tera - JANGAN edit manual (ADR 0012).
+[Unit]
+Description=Tera backup host checks and retention
+
+[Timer]
+OnCalendar={{ backup_target_schedule }}
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

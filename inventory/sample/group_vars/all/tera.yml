@@ -29,7 +29,8 @@ mariadb_cluster_mode: standalone # standalone | galera
 # tera_network_interface: eth1
 
 # --- Galera / load balancer (Fase 2/3) ---------------------------------------
-# mariadb_galera_cluster_name: "{{ inventory_dir | basename }}"   # must be unique per cluster
+# tera_cluster_name: "{{ inventory_dir | basename }}"             # backups and default galera name
+# mariadb_galera_cluster_name: "{{ tera_cluster_name }}"           # must be unique per cluster
 # tera_vip_address: 10.0.0.10                                     # must be unique per cluster
 # keepalived_virtual_router_id: 51                                # must be unique per L2 network
 # haproxy_stats_sources:                                          # who may open the stats page; [] = LB nodes only
@@ -41,3 +42,19 @@ mariadb_cluster_mode: standalone # standalone | galera
 # mariadb_client_sources:          # who may reach mariadb_port (and the VIP); default ["0.0.0.0/0"]
 #   - 10.10.10.0/24
 # mariadb_selinux_permissive: false   # RHEL: Tera labels ports and loads a minimal policy instead
+
+# --- Backup (ADR 0012, README "Backup") ---------------------------------------
+# Off by default: every deploy/reconfigure warns until backups are enabled.
+# mariadb_backup_enabled: true
+# mariadb_backup_host: db03                 # default: last mariadb node; galera writer refused
+# mariadb_backup_dir: /var/backups/tera/mariadb   # better on its own disk; never removed by destroy
+# mariadb_backup_full_schedule: "Sun *-*-* 01:00:00"
+# mariadb_backup_incremental_schedule: "Mon..Sat *-*-* 01:00:00"
+# mariadb_backup_keep_full: 2               # chains kept (count, never age)
+# mariadb_backup_targets:                   # off-node copies, always gpg encrypted
+#   - name: bk
+#     type: rsync
+#     host: backup01                        # in group mariadb_backup_target
+# mariadb_backup_gpg_public_key: "{{ inventory_dir }}/config/backup/backup.pub.asc"   # public key only
+# mariadb_backup_encrypt_local: false
+# mariadb_backup_throttle: ""               # galera: throttling lengthens the desync window

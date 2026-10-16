@@ -1,0 +1,42 @@
+---
+# Backups (ADR 0012): the backup node's SSH key first, then the backup hosts (authorize the key,
+# publish their host key), then the mariadb_backup role (config, known_hosts, timers).
+- name: Prepare backup node keys
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run mariadb_backup keys
+      ansible.builtin.include_role:
+        name: mariadb_backup
+        tasks_from: keys.yml
+      when: tera_action in ['deploy', 'reconfigure']
+
+- name: Apply backup_target role
+  hosts: mariadb_backup_target
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run backup_target action
+      ansible.builtin.include_role:
+        name: backup_target
+        tasks_from: "{{ tera_action }}.yml"
+
+- name: Apply mariadb_backup role
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run mariadb_backup action
+      ansible.builtin.include_role:
+        name: mariadb_backup
+        tasks_from: "{{ tera_action }}.yml"

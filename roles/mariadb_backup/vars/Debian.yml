@@ -1,0 +1,8 @@
+---
+# rsync ships rrsync on Ubuntu (needed on the node to receive restores from the backup host).
+_mariadb_backup_packages:
+  - mariadb-backup
+  - zstd
+  - gnupg
+  - rsync
+  - openssh-client

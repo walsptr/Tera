@@ -1,0 +1,36 @@
+---
+# tera destroy: stop and remove timers, units, scripts and /etc/tera/backup. Backups in
+# mariadb_backup_dir are never removed (ADR 0012), also without --keep-data.
+- name: Check destroy was confirmed
+  ansible.builtin.assert:
+    that:
+      - tera_destroy_confirm | default(false) | bool
+    fail_msg: "Destroy menghapus data. Jalankan lewat: ./tera destroy -i inventory/<cluster> --yes-i-really-really-mean-it"
+    quiet: true
+
+- name: Find backups
+  ansible.builtin.find:
+    paths: "{{ mariadb_backup_dir }}/{{ tera_cluster_name }}"
+    file_type: directory
+    recurse: false
+  register: _mariadb_backup_destroy_chains
+
+- name: Show what happens to backups
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: timer, unit, script, dan {{ tera_state_dir }}/backup dihapus. Backup di
+      {{ mariadb_backup_dir }} ({{ _mariadb_backup_destroy_chains.matched }} rantai) TIDAK dihapus; hapus manual
+      jika memang tidak dibutuhkan lagi.
+
+- name: Remove timers and units
+  ansible.builtin.include_tasks: units_remove.yml
+
+- name: Remove backup files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/local/sbin/tera-backup
+    - /usr/local/lib/tera/backup-targets
+    - "{{ tera_state_dir }}/backup"
+    - "{{ tera_state_dir }}/mariadb-backup.status"

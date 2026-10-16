@@ -1,0 +1,24 @@
+---
+# Nodes that do not take backups (backups off, or another mariadb_backup_host): no timers. Backups
+# already taken stay in mariadb_backup_dir.
+- name: Stop backup timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - tera-backup-full.timer
+    - tera-backup-incremental.timer
+  failed_when: false
+
+- name: Remove backup units
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ item }}
+    state: absent
+  loop: "{{ _mariadb_backup_units }}"
+  register: _mariadb_backup_units_removed
+
+- name: Reload systemd after removing backup units # noqa: no-handler
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: _mariadb_backup_units_removed is changed

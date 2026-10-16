@@ -1,0 +1,11 @@
+---
+# backup_target role (ADR 0012): a write-only destination for the nodes' backups. Directory, user and
+# retention (mariadb_backup_target_dir, mariadb_backup_target_user, mariadb_backup_keep_full) are in
+# roles/tera_defaults. Checks and retention run here, every 15 minutes by default.
+backup_target_schedule: "*:0/15"
+backup_target_state_dir: /var/lib/tera-backup-target
+
+# Internal: backup nodes of this cluster that push to this host.
+_backup_target_nodes: >-
+  {{ [mariadb_backup_host] if ((mariadb_backup_enabled | bool)
+     and (mariadb_backup_targets | selectattr('host', 'equalto', inventory_hostname) | list | length > 0)) else [] }}

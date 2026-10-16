@@ -1,0 +1,4 @@
+---
+# Backup settings are applied the same way by deploy and reconfigure.
+- name: Apply backup settings
+  ansible.builtin.import_tasks: deploy.yml

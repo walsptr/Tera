@@ -1,0 +1,48 @@
+---
+# tera backup-verify [-e mariadb_backup_verify_backup=<chain_id>/<seq>] [-e mariadb_backup_gpg_private_key=<file>]:
+# level-2 verification on the backup node at low priority. The private key (encrypted backups) goes to
+# a temporary keyring and is always removed.
+- name: Verify a backup
+  when: inventory_hostname == mariadb_backup_host
+  block:
+    - name: Create a temporary keyring
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: tera-gpg.
+      register: _mariadb_backup_verify_gpg
+      when: mariadb_backup_gpg_private_key | default('') | length > 0
+
+    - name: Import the private key
+      ansible.builtin.command:
+        cmd: gpg --homedir {{ _mariadb_backup_verify_gpg.path }} --batch --import
+        stdin: "{{ lookup('ansible.builtin.file', mariadb_backup_gpg_private_key) }}"
+      changed_when: true
+      no_log: true
+      when: mariadb_backup_gpg_private_key | default('') | length > 0
+
+    - name: Run the verification
+      ansible.builtin.command:
+        argv: >-
+          {{ ['nice', '-n', '19', 'ionice', '-c', '3', '/usr/local/sbin/tera-backup', 'verify']
+             + (['--backup', mariadb_backup_verify_backup] if mariadb_backup_verify_backup | default('') | length > 0 else [])
+             + (['--gpg-homedir', _mariadb_backup_verify_gpg.path] if _mariadb_backup_verify_gpg.path is defined else []) }}
+      register: _mariadb_backup_verify
+      changed_when: false
+      failed_when: false
+
+    - name: Show the result
+      ansible.builtin.debug:
+        msg: "{{ (_mariadb_backup_verify.stdout_lines + _mariadb_backup_verify.stderr_lines) }}"
+
+    - name: Check the verification passed
+      ansible.builtin.assert:
+        that:
+          - _mariadb_backup_verify.rc == 0
+        fail_msg: "Verifikasi backup gagal di {{ inventory_hostname }}; lihat pesan di atas."
+        quiet: true
+  always:
+    - name: Remove the temporary keyring
+      ansible.builtin.file:
+        path: "{{ _mariadb_backup_verify_gpg.path }}"
+        state: absent
+      when: _mariadb_backup_verify_gpg.path is defined

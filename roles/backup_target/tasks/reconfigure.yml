@@ -1,0 +1,3 @@
+---
+- name: Apply backup host settings
+  ansible.builtin.import_tasks: deploy.yml

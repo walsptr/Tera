@@ -1,0 +1,11 @@
+# Managed by Tera - JANGAN edit manual (ADR 0012). Level-2 verification after a full backup, at low
+# priority; MemoryMax also covers the throwaway mariadbd.
+[Unit]
+Description=Tera MariaDB backup verification
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tera-backup verify --auto
+Nice=19
+IOSchedulingClass=idle
+MemoryMax={{ mariadb_backup_verify_memory_max }}
