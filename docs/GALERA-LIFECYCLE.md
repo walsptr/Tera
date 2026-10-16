@@ -12,6 +12,7 @@
 | Synced | `wsrep_local_state_comment = Synced` (`wsrep_local_state = 4`) |
 | Marker | file `/etc/tera/mariadb-galera.bootstrapped`; tanda cluster pernah di-bootstrap oleh Tera |
 | Restart pending marker | file `/etc/tera/mariadb-restart-pending` (`mariadb_restart_marker`); ada = config baru belum aktif (ADR 0009) |
+| Restore marker | file `/etc/tera/mariadb-restore.active` (`mariadb_restore_marker`); ada = `tera restore` berjalan atau terputus, backup menolak berjalan (ADR 0013) |
 | Bootstrap host | `mariadb_bootstrap_host` (default `groups['mariadb'][0]`) |
 | grastate | `grastate.dat` di datadir: `uuid`, `seqno`, `safe_to_bootstrap` |
 
@@ -158,6 +159,25 @@ Primary tanpa campur tangan. Dalam kondisi itu `tera deploy` melihat cluster **a
 node yang tertinggal; `tera recover` menolak berjalan karena ada node Primary. Jika pemulihan otomatis tidak
 terjadi (tidak ada Primary), `tera deploy` gagal dan mengarahkan ke `tera recover`.
 
+## Restore (ADR 0013)
+
+`tera restore` adalah perintah eksplisit, seperti recover; tabel keputusan deploy tidak berubah.
+
+1. Tahap 1, MariaDB tetap berjalan: pilih rantai, cek cluster, seri MariaDB, dan mode (override
+   `mariadb_restore_allow_mode_change` untuk standalone ↔ galera), cek ruang disk di node restore dan node
+   yang akan menerima SST, tulis restore marker dan hentikan timer backup di semua node, tunggu lock backup,
+   kirim rantai ke node restore (kunci sementara dari sumber, tulis-saja ke staging), prepare dan cek dengan
+   `mariadbd` sementara. Gagal di sini = marker dihapus, timer dipulihkan, tidak ada yang diubah.
+2. Tahap 2: stop MariaDB di **semua** node; di node restore datadir lama dipindah ke
+   `<datadir>.pre-restore-<id>` dan hasil prepare dipindah masuk; `galera_new_cluster` di node restore (tanpa
+   `grastate.dat` → UUID cluster baru); `users.yml` di node restore (user SST sebelum joiner mana pun); joiner
+   start dengan `throttle: 1` dan menerima SST penuh; tunggu semua Synced.
+3. Selesai: marker bootstrap ada di semua node; restart pending marker dihapus di semua node; `needs-full`
+   ditulis (backup berikutnya full); restore marker dihapus; timer backup dipulihkan.
+
+Jika tahap 2 gagal, restore marker sengaja dibiarkan dan pesan error berisi langkah kembali ke datadir lama
+(lalu `tera recover`) atau, jika hanya joiner yang gagal, `tera deploy`.
+
 ## Timeout
 
 | Variabel | Default |
@@ -178,3 +198,4 @@ SST untuk data besar bisa butuh nilai yang lebih tinggi; naikkan di `group_vars`
 - Restart pada run tanpa perubahan config (dan tanpa restart pending marker).
 - Config baru yang sudah ditulis tidak pernah aktif karena run sebelumnya terputus.
 - Restart MariaDB saat backup sedang berjalan di node itu.
+- Backup dibuat saat restore berjalan atau terputus.

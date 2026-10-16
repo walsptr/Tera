@@ -1,0 +1,73 @@
+---
+# tera restore (docs/decisions/0013-restore-mariabackup.md). An explicit command, never part of deploy
+# (ADR 0006). Stage 1 validates, sends and prepares the backup without stopping MariaDB; stage 2
+# replaces the data (galera: the whole cluster is down until the restore node is Synced).
+- name: Confirm restore
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit confirmation and a backup id
+      ansible.builtin.assert:
+        that:
+          - tera_restore_confirm | default(false) | bool
+          - mariadb_restore_backup | default('') | length > 0
+          - not ansible_check_mode
+        fail_msg: >-
+          Restore mengganti data. Jalankan lewat: ./tera restore -i inventory/<cluster> --yes-i-really-really-mean-it
+          -e mariadb_restore_backup=<latest|chain_id/sequence> (tanpa --check).
+        quiet: true
+
+    - name: Set the restore id
+      ansible.builtin.set_fact:
+        tera_restore_id: "{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%dT%H%M%SZ') }}"
+
+- name: Gather facts for restore
+  hosts: mariadb:mariadb_backup_target
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Set tera_listen_address
+      ansible.builtin.include_tasks: tasks/listen_address.yml
+
+- name: Restore stage 1 (validate, send, prepare; MariaDB keeps running)
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run restore stage 1
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: restore_prepare.yml
+
+- name: Restore stage 2 (replace the data)
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run restore stage 2
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: restore_apply.yml
+
+- name: Finish restore
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run restore finish
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: restore_finish.yml

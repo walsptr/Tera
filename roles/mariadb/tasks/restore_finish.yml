@@ -1,0 +1,76 @@
+---
+# tera restore, finish (ADR 0013): markers, scheduled backups, staging cleanup, and the old datadir.
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Write the Galera bootstrap marker
+  ansible.builtin.copy:
+    content: "Galera cluster bootstrapped by Tera. Do not remove: deploy relies on it (ADR 0006).\n"
+    dest: "{{ mariadb_galera_marker }}"
+    owner: root
+    group: mysql
+    mode: "0640"
+    force: false
+  when: mariadb_cluster_mode == 'galera'
+
+# Every node now runs with the config on disk (ADR 0009).
+- name: Remove the restart pending marker
+  ansible.builtin.file:
+    path: "{{ mariadb_restart_marker }}"
+    state: absent
+
+# The old chains describe the data before the restore: the next backup must be a full (ADR 0013).
+# On every node with tera-backup: the node taking backups may change later.
+- name: Check tera-backup is installed
+  ansible.builtin.stat:
+    path: "{{ tera_state_dir }}/backup"
+  register: _mariadb_restore_backup_state
+
+- name: Require a full as the next backup
+  ansible.builtin.copy:
+    content: "tera restore {{ _mariadb_restore_id }}: next backup must be a full\n"
+    dest: "{{ tera_state_dir }}/backup/needs-full"
+    owner: root
+    group: root
+    mode: "0600"
+  when: _mariadb_restore_backup_state.stat.isdir | default(false)
+
+- name: Remove the restore marker
+  ansible.builtin.file:
+    path: "{{ mariadb_restore_marker }}"
+    state: absent
+
+- name: Flush markers to disk
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+
+- name: Start the backup timers again
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+  loop:
+    - tera-backup-full.timer
+    - tera-backup-incremental.timer
+  when:
+    - mariadb_backup_enabled | bool
+    - inventory_hostname == mariadb_backup_host
+
+- name: Remove the staging directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ mariadb_backup_dir }}/.incoming/{{ _mariadb_restore_id }}"
+    - "{{ mariadb_backup_dir }}/.restore/{{ _mariadb_restore_id }}"
+  when: inventory_hostname == _mariadb_restore_host
+
+- name: Show the result
+  ansible.builtin.debug:
+    msg: >-
+      Restore {{ _mariadb_restore_chain.id }} selesai{% if mariadb_cluster_mode == 'galera' %}
+      (cluster {{ groups['mariadb'] | length }} node Synced){% endif %}.
+      Datadir lama di {{ _mariadb_restore_host }}: {{ mariadb_datadir }}.pre-restore-{{ _mariadb_restore_id }}. Setelah aplikasi
+      diverifikasi, hapus dengan: sudo rm -rf {{ mariadb_datadir }}.pre-restore-{{ _mariadb_restore_id }}.
+      Backup berikutnya otomatis full.
+  run_once: true

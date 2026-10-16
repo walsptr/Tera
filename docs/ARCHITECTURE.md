@@ -13,14 +13,15 @@
 tera                                  # CLI bash
 ansible.cfg  requirements.yml  requirements-dev.txt  site.yml  .gitignore
 .ansible-lint  .yamllint  pyproject.toml  .github/workflows/ci.yml
-playbooks/{facts,common,mariadb,loadbalancer,backup,mariadb-recover,mariadb-backup,destroy}.yml
-playbooks/tasks/listen_address.yml     # tera_listen_address, dipakai facts.yml
+playbooks/{facts,common,mariadb,loadbalancer,backup,mariadb-recover,mariadb-backup,mariadb-restore,destroy}.yml
+playbooks/tasks/listen_address.yml     # tera_listen_address, dipakai facts.yml dan mariadb-restore.yml
 plugins/filter/{merge_ini,tera_ip}.py   plugins/tests/test_{merge_ini,tera_ip,tera_backup}.py   # tests outside filter/: Ansible loads filter subdirs as plugins
 roles/tera_defaults/defaults/main.yml
 roles/common/tasks/{prechecks,deploy,reconfigure}.yml
 roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
-  tasks entry point: prechecks deploy reconfigure restart recover destroy
+  tasks entry point: prechecks deploy reconfigure restart recover destroy restore_{prepare,apply,finish}
   tasks internal:    vars install firewall config status standalone galera users clustercheck selinux wait_synced
+                     restore_transfer restore_abort
   templates:         tera.cnf.j2 tera-clustercheck.j2 tera-clustercheck.socket.j2 tera-clustercheck@.service.j2
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
 roles/mariadb_backup/{defaults,vars,templates,files/{tera_backup.py,backup-target-rsync}}   # ADR 0012
@@ -72,6 +73,7 @@ Nilai yang wajib unik per cluster dan divalidasi di prechecks:
 | `backup -i [--incremental]` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=run -e mariadb_backup_type=full\|incremental`) | – |
 | `backup-verify -i` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=verify`) | – |
 | `backup-status -i` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=status`) | – |
+| `restore -i … --yes-i-really-really-mean-it -e mariadb_restore_backup=<id>` | `playbooks/mariadb-restore.yml` (`-e tera_restore_confirm=true`) | – |
 
 Perilaku CLI:
 
@@ -84,8 +86,8 @@ Perilaku CLI:
   dan YAML. Key top-level dianggap kosong jika nilainya kosong, `""`, `''`, `~`, atau `null` dan baris
   berikutnya tidak menjorok (bukan parent mapping/list). File yang terenkripsi vault ditolak.
 - `new-cluster <nama>` membuat `inventory/<nama>` (nama: huruf, angka, `.`, `_`, `-`) dan menolak jika sudah ada.
-- `destroy` ditolak tanpa flag `--yes-i-really-really-mean-it`. `--keep-data` hanya diterima oleh `destroy`,
-  `--incremental` hanya oleh `backup`.
+- `destroy` dan `restore` ditolak tanpa flag `--yes-i-really-really-mean-it`. `--keep-data` hanya diterima oleh
+  `destroy`, `--incremental` hanya oleh `backup`.
 
 ## Alur play `site.yml`
 
@@ -134,7 +136,7 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `mariadb_restart_marker` | `{{ tera_state_dir }}/mariadb-restart-pending` |
 | `mariadb_galera_marker` | `{{ tera_state_dir }}/mariadb-galera.bootstrapped` |
 | `mariadb_datadir_marker` | `{{ tera_state_dir }}/mariadb-datadir.initialized` |
-| `mariadb_restore_marker` | `{{ tera_state_dir }}/mariadb-restore.active` (backup menolak berjalan selama ada) |
+| `mariadb_restore_marker` | `{{ tera_state_dir }}/mariadb-restore.active` (ditulis `tera restore`; backup menolak berjalan selama ada) |
 | `tera_cluster_name` | nama folder inventory |
 | `mariadb_datadir` | `/var/lib/mysql` (dibaca pengaman SST, `tera recover`, backup, dan restore; samakan jika custom config mengubah datadir) |
 | `mariadb_backup_enabled` | `false` (opt-in; deploy/reconfigure memberi peringatan selama `false`) |
@@ -197,6 +199,12 @@ Variabel role `mariadb_backup` (`roles/mariadb_backup/defaults/main.yml`, ADR 00
 | `mariadb_backup_encrypt_local` | `false` |
 | `mariadb_backup_allow_writer` | `false` |
 | `mariadb_backup_source_address` | (opsional, host var) alamat node yang dilihat host backup untuk `from=`; default `tera_listen_address` |
+
+Variabel `tera restore` (ADR 0013, lewat `-e`): `mariadb_restore_backup` (`latest` atau `<chain_id>/<sequence>`),
+`mariadb_restore_host` (default: standalone = satu-satunya node, galera = `mariadb_bootstrap_host`),
+`mariadb_restore_source` (`local` atau nama target), `mariadb_restore_source_host` (node yang backup-nya
+dipulihkan; default `mariadb_backup_host`), `mariadb_restore_gpg_private_key` (file di controller),
+`mariadb_restore_allow_mode_change` (`false`).
 
 
 ## Topologi HA

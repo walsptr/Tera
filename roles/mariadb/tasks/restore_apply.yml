@@ -1,0 +1,126 @@
+---
+# tera restore, stage 2 (ADR 0013): replace the data. Standalone: stop, move the old datadir aside,
+# move the prepared copy in, start. Galera: stop every node, do the same on the restore node,
+# bootstrap a new cluster from it (no grastate.dat -> new UUID), users (SST user before any joiner),
+# then the joiners one by one; they receive a full SST.
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Set stage 2 paths
+  ansible.builtin.set_fact:
+    _mariadb_restore_old: "{{ mariadb_datadir }}.pre-restore-{{ _mariadb_restore_id }}"
+    _mariadb_restore_prepared_dir: "{{ hostvars[_mariadb_restore_host]['_mariadb_restore_prepared'] }}"
+
+- name: Replace the data
+  block:
+    - name: Stop MariaDB
+      ansible.builtin.systemd_service:
+        name: "{{ _mariadb_service }}"
+        state: stopped
+
+    - name: Move the prepared data in on the restore node
+      when: inventory_hostname == _mariadb_restore_host
+      block:
+        - name: Read the current datadir
+          ansible.builtin.stat:
+            path: "{{ mariadb_datadir }}"
+          register: _mariadb_restore_datadir_stat
+
+        - name: Read the staging filesystem
+          ansible.builtin.stat:
+            path: "{{ _mariadb_restore_prepared_dir }}"
+          register: _mariadb_restore_prepared_stat
+
+        - name: Move the old datadir aside
+          ansible.builtin.command:
+            cmd: mv {{ mariadb_datadir }} {{ _mariadb_restore_old }}
+            creates: "{{ _mariadb_restore_old }}"
+
+        - name: Create the empty datadir
+          ansible.builtin.file:
+            path: "{{ mariadb_datadir }}"
+            state: directory
+            owner: mysql
+            group: mysql
+            mode: "{{ _mariadb_restore_datadir_stat.stat.mode }}"
+
+        # Same filesystem: rename (fast, no extra space); otherwise copy.
+        - name: Move the prepared data into the datadir
+          ansible.builtin.command:
+            cmd: >-
+              mariabackup {{ '--move-back' if _mariadb_restore_prepared_stat.stat.dev == _mariadb_restore_datadir_stat.stat.dev else '--copy-back' }}
+              --target-dir={{ _mariadb_restore_prepared_dir }} --datadir={{ mariadb_datadir }}
+          changed_when: true
+
+        - name: Give the datadir to mysql
+          ansible.builtin.command:
+            cmd: chown -R mysql:mysql {{ mariadb_datadir }}
+          changed_when: true
+
+        - name: Restore SELinux labels on the datadir
+          ansible.builtin.command:
+            cmd: restorecon -R {{ mariadb_datadir }}
+          changed_when: true
+          when: (ansible_facts['selinux']['status'] | default('disabled')) == 'enabled'
+
+        - name: Flush the restored datadir to disk
+          ansible.builtin.command:
+            cmd: sync
+          changed_when: false
+
+    - name: Start MariaDB (standalone)
+      ansible.builtin.systemd_service:
+        name: "{{ _mariadb_service }}"
+        state: started
+      when: mariadb_cluster_mode == 'standalone'
+
+    - name: Bootstrap a new cluster from the restore node
+      ansible.builtin.command:
+        cmd: galera_new_cluster
+      changed_when: true
+      when:
+        - mariadb_cluster_mode == 'galera'
+        - inventory_hostname == _mariadb_restore_host
+
+    - name: Wait for the restore node to be Synced
+      ansible.builtin.include_tasks: wait_synced.yml
+      when:
+        - mariadb_cluster_mode == 'galera'
+        - inventory_hostname == _mariadb_restore_host
+
+    # mysql.* comes from the backup: Tera users (SST user first) may have old or no passwords.
+    - name: Manage users on the restore node
+      ansible.builtin.include_tasks: users.yml
+      when: inventory_hostname == _mariadb_restore_host
+
+    - name: Start joiners one by one (full SST from the restore node)
+      ansible.builtin.systemd_service:
+        name: "{{ _mariadb_service }}"
+        state: started
+      throttle: 1
+      when:
+        - mariadb_cluster_mode == 'galera'
+        - inventory_hostname != _mariadb_restore_host
+
+    - name: Wait for every node to be Synced
+      ansible.builtin.include_tasks: wait_synced.yml
+      when: mariadb_cluster_mode == 'galera'
+
+    - name: Wait for MariaDB port
+      ansible.builtin.wait_for:
+        host: "{{ tera_listen_address }}"
+        port: "{{ mariadb_port }}"
+        timeout: "{{ mariadb_port_timeout }}"
+
+  rescue:
+    - name: Explain how to recover from a failed stage 2
+      ansible.builtin.fail:
+        msg: >-
+          Restore tahap 2 gagal di {{ inventory_hostname }}: {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('')) }}.
+          {% if inventory_hostname == _mariadb_restore_host %}Datadir lama utuh di {{ _mariadb_restore_old }}. Untuk kembali ke data lama:
+          sudo systemctl stop {{ _mariadb_service }}; sudo rm -rf {{ mariadb_datadir }}; sudo mv {{ _mariadb_restore_old }} {{ mariadb_datadir }};
+          lalu {{ './tera recover -i inventory/<cluster>' if mariadb_cluster_mode == 'galera' else 'sudo systemctl start ' ~ _mariadb_service }}.
+          {% else %}Node restore sudah memegang data hasil restore; jalankan ./tera deploy -i inventory/<cluster> untuk me-join node
+          ini (jika datadir-nya tertinggal kosong, pengaman datadir menjelaskan langkahnya).{% endif %}
+          Marker {{ mariadb_restore_marker }} sengaja dibiarkan agar backup terjadwal tidak membuat rantai dari data yang belum pasti;
+          hapus setelah keadaan dipastikan, atau jalankan ./tera restore lagi.

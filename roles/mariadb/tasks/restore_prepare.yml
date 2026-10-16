@@ -1,0 +1,286 @@
+---
+# tera restore, stage 1 (ADR 0013): everything that can fail happens before MariaDB is stopped.
+# Runs on every mariadb node; the chain is selected, sent and prepared on the restore node.
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Set restore plan
+  ansible.builtin.set_fact:
+    _mariadb_restore_id: "{{ hostvars['localhost']['tera_restore_id'] }}"
+    _mariadb_restore_host: >-
+      {{ (mariadb_restore_host | default('')) or (mariadb_bootstrap_host if mariadb_cluster_mode == 'galera' else groups['mariadb'][0]) }}
+    _mariadb_restore_source: "{{ mariadb_restore_source | default('local') }}"
+    _mariadb_restore_key: "{{ mariadb_restore_gpg_private_key | default('') }}"
+
+- name: Check restore prerequisites
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | sort == groups['mariadb'] | sort
+      - _mariadb_restore_host in groups['mariadb']
+      - (_mariadb_restore_source == 'local') or (_mariadb_restore_source in (mariadb_backup_targets | map(attribute='name') | list))
+      - (_mariadb_restore_key | length == 0) or (lookup('ansible.builtin.fileglob', _mariadb_restore_key) | length > 0)
+      - (mariadb_restore_source_host | default('', true)) in ([''] + groups['mariadb'])
+    fail_msg: >-
+      tera restore harus mencakup semua node group mariadb (tanpa --limit; host di run ini:
+      {{ ansible_play_hosts_all | join(', ') }}); mariadb_restore_host ('{{ _mariadb_restore_host }}') harus salah satu dari
+      {{ groups['mariadb'] | join(', ') }}; mariadb_restore_source ('{{ _mariadb_restore_source }}') harus 'local' atau nama
+      target di mariadb_backup_targets ({{ mariadb_backup_targets | map(attribute='name') | join(', ') or 'kosong' }});
+      mariadb_restore_gpg_private_key harus file yang ada di controller; mariadb_restore_source_host (jika diisi) salah
+      satu node mariadb.
+    quiet: true
+  run_once: true
+
+# The node whose backups are restored: mariadb_restore_source_host (default mariadb_backup_host). Local
+# backups live on that node; remote ones under its name on the backup host.
+- name: Locate the backup source
+  ansible.builtin.set_fact:
+    _mariadb_restore_src_node: "{{ _src_node }}"
+    _mariadb_restore_src_host: "{{ _src_node if _mariadb_restore_source == 'local' else _target.host }}"
+    _mariadb_restore_src_root: >-
+      {{ (mariadb_backup_dir ~ '/' ~ tera_cluster_name) if _mariadb_restore_source == 'local'
+         else (mariadb_backup_target_dir ~ '/' ~ tera_cluster_name ~ '/' ~ _src_node) }}
+    _mariadb_restore_select_cmd: >-
+      {{ ['/usr/local/sbin/tera-backup', 'select', '--root', mariadb_backup_dir ~ '/' ~ tera_cluster_name]
+         if _mariadb_restore_source == 'local'
+         else ['/usr/local/sbin/tera-backup-target', 'select', '--cluster', tera_cluster_name, '--host', _src_node] }}
+  vars:
+    _src_node: "{{ mariadb_restore_source_host | default(mariadb_backup_host, true) }}"
+    _target: "{{ mariadb_backup_targets | selectattr('name', 'equalto', _mariadb_restore_source) | first | default({}) }}"
+
+- name: Select the backup chain
+  ansible.builtin.command:
+    argv: "{{ _mariadb_restore_select_cmd + ['--backup', mariadb_restore_backup] }}"
+  delegate_to: "{{ _mariadb_restore_src_host }}"
+  register: _mariadb_restore_select
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname == _mariadb_restore_host
+
+- name: Check the backup chain was found
+  ansible.builtin.assert:
+    that:
+      - _mariadb_restore_select.rc == 0
+    fail_msg: >-
+      Backup '{{ mariadb_restore_backup }}' tidak ditemukan di {{ _mariadb_restore_src_host }}
+      ({{ 'lokal' if _mariadb_restore_source == 'local' else 'host backup ' ~ _mariadb_restore_source ~ ', hanya backup terverifikasi' }}):
+      {{ _mariadb_restore_select.stderr | default('') | trim }}. Lihat ./tera backup-status -i inventory/<cluster>.
+    quiet: true
+  when: inventory_hostname == _mariadb_restore_host
+
+- name: Read the installed MariaDB version
+  ansible.builtin.command:
+    cmd: mariadbd --version
+  register: _mariadb_restore_installed
+  changed_when: false
+  when: inventory_hostname == _mariadb_restore_host
+
+- name: Remember the chain
+  ansible.builtin.set_fact:
+    _mariadb_restore_chain: "{{ _mariadb_restore_select.stdout | from_json }}"
+    _mariadb_restore_series_installed: "{{ _mariadb_restore_installed.stdout | regex_search('Ver ([0-9]+\\.[0-9]+)', '\\1') | first }}"
+  when: inventory_hostname == _mariadb_restore_host
+
+- name: Share the chain with every node
+  ansible.builtin.set_fact:
+    _mariadb_restore_chain: "{{ hostvars[_mariadb_restore_host]['_mariadb_restore_chain'] }}"
+    _mariadb_restore_full: "{{ hostvars[_mariadb_restore_host]['_mariadb_restore_chain']['backups'][0]['meta'] }}"
+    _mariadb_restore_last: "{{ hostvars[_mariadb_restore_host]['_mariadb_restore_chain']['backups'][-1]['meta'] }}"
+
+- name: Check the backup fits this cluster
+  ansible.builtin.assert:
+    that:
+      - _mariadb_restore_full.cluster == tera_cluster_name
+      - _series_backup == _mariadb_restore_series_installed
+      - (_mariadb_restore_full.mode == mariadb_cluster_mode) or (mariadb_restore_allow_mode_change | default(false) | bool)
+    fail_msg: >-
+      Backup {{ _mariadb_restore_chain.id }} tidak cocok: cluster '{{ _mariadb_restore_full.cluster }}' (sekarang
+      '{{ tera_cluster_name }}'; restore lintas cluster belum didukung), seri MariaDB {{ _series_backup }} (terpasang
+      {{ _mariadb_restore_series_installed }}; seri harus sama), mode '{{ _mariadb_restore_full.mode }}' (sekarang
+      '{{ mariadb_cluster_mode }}'; untuk migrasi antar mode set -e mariadb_restore_allow_mode_change=true).
+      Tidak ada yang diubah.
+    quiet: true
+  vars:
+    _series_backup: "{{ _mariadb_restore_full.mariadb_version | regex_search('^[0-9]+\\.[0-9]+') }}"
+  when: inventory_hostname == _mariadb_restore_host
+
+- name: Warn about a different patch version
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: backup dibuat dengan MariaDB {{ _mariadb_restore_full.mariadb_version }}, terpasang
+      {{ _mariadb_restore_installed.stdout | regex_search('Ver (\\S+)', '\\1') | first }}. Seri sama, restore dilanjutkan.
+  when:
+    - inventory_hostname == _mariadb_restore_host
+    - _mariadb_restore_installed.stdout is not search('Ver ' ~ (_mariadb_restore_full.mariadb_version | regex_search('^[0-9.]+')) ~ '-')
+
+# --- Disk space -------------------------------------------------------------------------------
+
+- name: Read free space and datadir size
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      mkdir -p {{ mariadb_backup_dir | quote }} &&
+      echo "backup $(df -B1 --output=avail {{ mariadb_backup_dir | quote }} | tail -1) $(stat -c %d {{ mariadb_backup_dir | quote }})" &&
+      echo "datadir $(df -B1 --output=avail {{ mariadb_datadir | quote }} | tail -1) $(stat -c %d {{ mariadb_datadir | quote }})
+      $(du -sb {{ mariadb_datadir | quote }} | cut -f1)"
+    executable: /bin/bash
+  register: _mariadb_restore_df
+  changed_when: false
+
+- name: Compute disk requirements
+  ansible.builtin.set_fact:
+    _mariadb_restore_transfer: "{{ hostvars[_mariadb_restore_host]['_mariadb_restore_src_host'] != _mariadb_restore_host }}"
+    _df_backup: "{{ (_mariadb_restore_df.stdout_lines | select('match', '^backup ') | first).split() }}"
+    _df_datadir: "{{ (_mariadb_restore_df.stdout_lines | select('match', '^datadir ') | first).split() }}"
+    _restore_size: "{{ _mariadb_restore_full.datadir_size_bytes | int }}"
+    _transfer_size: "{{ _mariadb_restore_chain.backups | map(attribute='meta') | map(attribute='size_bytes') | sum }}"
+
+- name: Check free space on the restore node
+  ansible.builtin.assert:
+    that:
+      - _df_backup[1] | int >= _need_staging | int
+      - (_df_backup[2] == _df_datadir[2]) or (_df_datadir[1] | int >= _restore_size | int)
+    fail_msg: >-
+      Ruang disk tidak cukup di {{ inventory_hostname }}: {{ mariadb_backup_dir }} bebas {{ (_df_backup[1] | int / 1048576) | int }} MiB,
+      butuh {{ (_need_staging | int / 1048576) | int }} MiB (staging + hasil bongkar){% if _df_backup[2] != _df_datadir[2] %};
+      {{ mariadb_datadir }} di filesystem lain bebas {{ (_df_datadir[1] | int / 1048576) | int }} MiB, butuh
+      {{ (_restore_size | int / 1048576) | int }} MiB{% endif %}. MariaDB belum dihentikan.
+    quiet: true
+  vars:
+    _need_staging: "{{ (_transfer_size | int if _mariadb_restore_transfer | bool else 0) + (_restore_size | int * 1.1) | int }}"
+  when: inventory_hostname == _mariadb_restore_host
+
+- name: Check free space on nodes that receive an SST
+  ansible.builtin.assert:
+    that:
+      - (_df_datadir[1] | int + _df_datadir[3] | int) >= (_restore_size | int * 1.1) | int
+    fail_msg: >-
+      {{ inventory_hostname }} akan menerima SST penuh sebesar sekitar {{ (_restore_size | int / 1048576) | int }} MiB, tetapi
+      ruang bebas + datadir sekarang hanya {{ ((_df_datadir[1] | int + _df_datadir[3] | int) / 1048576) | int }} MiB. MariaDB
+      belum dihentikan.
+    quiet: true
+  when:
+    - mariadb_cluster_mode == 'galera'
+    - inventory_hostname != _mariadb_restore_host
+
+- name: Find old datadir copies from earlier restores
+  ansible.builtin.find:
+    paths: "{{ mariadb_datadir | dirname }}"
+    patterns: "{{ mariadb_datadir | basename }}.pre-restore-*"
+    file_type: directory
+  register: _mariadb_restore_old
+
+- name: Warn about old datadir copies
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: {{ inventory_hostname }} masih menyimpan datadir dari restore sebelumnya:
+      {{ _mariadb_restore_old.files | map(attribute='path') | join(', ') }}. Hapus jika tidak dibutuhkan lagi
+      (sudo rm -rf <path>).
+  when: _mariadb_restore_old.matched > 0
+
+# --- Stop scheduled backups (every node) -----------------------------------------------------
+
+- name: Write the restore marker
+  ansible.builtin.copy:
+    content: "tera restore {{ _mariadb_restore_id }} sedang berjalan. Backup terjadwal menolak berjalan (ADR 0013).\n"
+    dest: "{{ mariadb_restore_marker }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Flush the restore marker to disk
+  ansible.builtin.command:
+    cmd: sync
+  changed_when: false
+
+- name: Stop backup timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+  loop:
+    - tera-backup-full.timer
+    - tera-backup-incremental.timer
+  failed_when: false
+
+- name: Wait for a running backup to finish
+  ansible.builtin.command:
+    cmd: flock -w {{ mariadb_backup_lock_timeout }} -E 75 {{ mariadb_backup_lock }} true
+  register: _mariadb_restore_lock
+  changed_when: false
+  failed_when: false
+
+- name: Check no backup is still running
+  ansible.builtin.assert:
+    that:
+      - _mariadb_restore_lock.rc == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: backup masih berjalan setelah {{ mariadb_backup_lock_timeout }} detik
+      ({{ mariadb_backup_lock }}). MariaDB belum dihentikan; ulangi restore setelah backup selesai.
+    quiet: true
+
+# --- Send and prepare on the restore node -------------------------------------------------------
+
+- name: Send and prepare the backup
+  when: inventory_hostname == _mariadb_restore_host
+  block:
+    - name: Send the backup from its source
+      ansible.builtin.include_tasks: restore_transfer.yml
+      when: _mariadb_restore_transfer | bool
+
+    - name: Create a temporary keyring for the private key
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: tera-gpg.
+      register: _mariadb_restore_gpg
+      when: _mariadb_restore_key | length > 0
+
+    - name: Import the private key
+      ansible.builtin.command:
+        cmd: gpg --homedir {{ _mariadb_restore_gpg.path }} --batch --import
+        stdin: "{{ lookup('ansible.builtin.file', _mariadb_restore_key) }}"
+      changed_when: true
+      no_log: true
+      when: _mariadb_restore_key | length > 0
+
+    - name: Unpack, prepare and check the backup
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/usr/local/sbin/tera-backup', 'prepare',
+              '--root', (mariadb_backup_dir ~ '/.incoming/' ~ _mariadb_restore_id) if (_mariadb_restore_transfer | bool) else _mariadb_restore_src_root,
+              '--backup', _mariadb_restore_chain.id,
+              '--out', mariadb_backup_dir ~ '/.restore/' ~ _mariadb_restore_id]
+             + (['--gpg-homedir', _mariadb_restore_gpg.path] if _mariadb_restore_gpg.path is defined else []) }}
+      register: _mariadb_restore_prepare
+      changed_when: true
+
+    - name: Remember the prepared datadir
+      ansible.builtin.set_fact:
+        _mariadb_restore_prepared: "{{ (_mariadb_restore_prepare.stdout | from_json).prepared }}"
+        _mariadb_restore_tables: "{{ (_mariadb_restore_prepare.stdout | from_json).tables }}"
+
+  rescue:
+    - name: Restore scheduled backups after a failed stage 1
+      ansible.builtin.include_tasks: restore_abort.yml
+
+    - name: Fail stage 1
+      ansible.builtin.fail:
+        msg: >-
+          Restore tahap 1 gagal di {{ inventory_hostname }} ({{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('')) }}).
+          MariaDB tidak dihentikan dan data tidak diubah; backup terjadwal dipulihkan.
+
+  always:
+    - name: Remove the temporary keyring
+      ansible.builtin.file:
+        path: "{{ _mariadb_restore_gpg.path }}"
+        state: absent
+      when: _mariadb_restore_gpg.path is defined
+
+- name: Show the restore summary
+  ansible.builtin.debug:
+    msg: >-
+      Restore {{ _mariadb_restore_chain.id }} ({{ _mariadb_restore_chain.backups | length }} backup, terakhir
+      {{ _mariadb_restore_last.finished_at }}, MariaDB {{ _mariadb_restore_full.mariadb_version }}, mode {{ _mariadb_restore_full.mode }},
+      {{ hostvars[_mariadb_restore_host]['_mariadb_restore_tables'] }} tabel lolos CHECK TABLE) ke {{ _mariadb_restore_host }}.
+      {% if mariadb_cluster_mode == 'galera' %}Semua node dihentikan; {{ groups['mariadb'] | reject('equalto', _mariadb_restore_host) | join(', ') }}
+      akan ditimpa SST. {% endif %}Datadir lama di {{ _mariadb_restore_host }} dipindahkan ke
+      {{ mariadb_datadir }}.pre-restore-{{ _mariadb_restore_id }}.
+  run_once: true

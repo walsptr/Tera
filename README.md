@@ -199,6 +199,28 @@ gpg --armor --export backup@example.com > inventory/prod-b/config/backup/backup.
   private key); set `mariadb_backup_encrypt_local: true` jika perlu.
 - `tera destroy` **tidak pernah** menghapus backup, baik di node maupun di host backup.
 
+### Restore
+
+```bash
+./tera restore -i inventory/prod-b --yes-i-really-really-mean-it -e mariadb_restore_backup=latest
+# backup tertentu dari host backup:
+./tera restore -i inventory/prod-b --yes-i-really-really-mean-it \
+    -e mariadb_restore_backup=20261018T010000Z/2 -e mariadb_restore_source=bk \
+    -e mariadb_restore_gpg_private_key=~/secure/backup.key.asc
+```
+
+- Id backup terlihat di `./tera backup-status` (`<chain_id>/<sequence>`).
+- Semua pemeriksaan (cluster, seri MariaDB, mode, checksum, ruang disk) dan prepare dilakukan **sebelum**
+  MariaDB dihentikan. Jika gagal di tahap ini, tidak ada yang diubah.
+- Galera: **seluruh cluster down** sampai node restore Synced; node lain lalu menerima SST penuh.
+- Data setelah backup itu hilang. Backup berikutnya otomatis full.
+- Restore standalone → galera (atau sebaliknya) adalah jalur migrasi; butuh
+  `-e mariadb_restore_allow_mode_change=true`.
+- Datadir lama di node restore dipindahkan ke `/var/lib/mysql.pre-restore-<id>` dan **tidak** dihapus otomatis.
+  Setelah aplikasi diverifikasi: `sudo rm -rf /var/lib/mysql.pre-restore-<id>`.
+- Restore dari host backup mengirim data langsung dari host backup ke node dengan kunci sementara; sshd node
+  restore harus menerima login kunci untuk root (`PermitRootLogin prohibit-password`, default Ubuntu/EL9).
+
 ## Destroy
 
 ```bash

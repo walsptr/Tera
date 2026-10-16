@@ -1,0 +1,101 @@
+---
+# tera restore: send the chain from its source (backup host, or the node that took the backups) to
+# the restore node (ADR 0013). The source gets a temporary key that may only write into the staging
+# directory of this restore (root@node, rrsync -wo, from the source address); the node never holds
+# a credential that reads the backup host. Key and authorization are removed in `always`.
+# Requires sshd on the restore node to accept key logins for root (PermitRootLogin prohibit-password,
+# the default on Ubuntu and EL9).
+- name: Transfer the backup chain
+  vars:
+    _src: "{{ _mariadb_restore_src_host }}"
+    _src_address: "{{ hostvars[_mariadb_restore_src_host]['tera_listen_address'] }}"
+    _incoming: "{{ mariadb_backup_dir }}/.incoming/{{ _mariadb_restore_id }}"
+    _comment: tera-restore-{{ _mariadb_restore_id }}
+  block:
+    - name: Create the staging directory
+      ansible.builtin.file:
+        path: "{{ _incoming }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Create a temporary directory on the source
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: tera-restore.
+      delegate_to: "{{ _src }}"
+      register: _mariadb_restore_xfer
+
+    - name: Generate the temporary key on the source
+      ansible.builtin.command:
+        cmd: ssh-keygen -q -t ed25519 -N '' -C {{ _comment }} -f {{ _mariadb_restore_xfer.path }}/id_ed25519
+      delegate_to: "{{ _src }}"
+      changed_when: true
+
+    - name: Read the temporary public key
+      ansible.builtin.slurp:
+        src: "{{ _mariadb_restore_xfer.path }}/id_ed25519.pub"
+      delegate_to: "{{ _src }}"
+      register: _mariadb_restore_xfer_pub
+
+    - name: Read the restore node host key
+      ansible.builtin.slurp:
+        src: /etc/ssh/ssh_host_ed25519_key.pub
+      register: _mariadb_restore_hostkey
+
+    - name: Pin the restore node host key on the source
+      ansible.builtin.copy:
+        content: "{{ tera_listen_address }} {{ (_mariadb_restore_hostkey.content | b64decode).split()[:2] | join(' ') }}\n"
+        dest: "{{ _mariadb_restore_xfer.path }}/known_hosts"
+        mode: "0600"
+      delegate_to: "{{ _src }}"
+
+    - name: Authorize the temporary key (write only, staging directory only)
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ _mariadb_restore_xfer_pub.content | b64decode | trim }}"
+        key_options: 'command="/usr/bin/rrsync -wo {{ _incoming }}",restrict,from="{{ _src_address }}"'
+        state: present
+
+    - name: Send the chain
+      ansible.builtin.command:
+        argv: >-
+          {{ ['rsync', '-rtR', '--exclude', 'mariabackup.log', '--exclude', '.pushed-*', '-e',
+              'ssh -i ' ~ _mariadb_restore_xfer.path ~ '/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes'
+              ~ ' -o StrictHostKeyChecking=yes -o UserKnownHostsFile=' ~ _mariadb_restore_xfer.path ~ '/known_hosts']
+             + (_mariadb_restore_chain.backups | map(attribute='path')
+                | map('regex_replace', '^' ~ (_mariadb_restore_src_root | regex_escape) ~ '/', _mariadb_restore_src_root ~ '/./')
+                | map('regex_replace', '$', '/') | list)
+             + ['root@' ~ tera_listen_address ~ ':'] }}
+      delegate_to: "{{ _src }}"
+      register: _mariadb_restore_rsync
+      changed_when: true
+      failed_when: false
+
+    - name: Check the chain arrived
+      ansible.builtin.assert:
+        that:
+          - _mariadb_restore_rsync.rc == 0
+        fail_msg: >-
+          Mengirim backup dari {{ _src }} ke {{ inventory_hostname }} gagal (rc={{ _mariadb_restore_rsync.rc }}):
+          {{ _mariadb_restore_rsync.stderr | trim }}. Pastikan {{ _src }} bisa SSH ke {{ tera_listen_address }}:22 dan sshd
+          {{ inventory_hostname }} mengizinkan login kunci untuk root (PermitRootLogin prohibit-password). Alternatif: salin
+          rantai ke {{ mariadb_backup_dir }}/{{ tera_cluster_name }}/ di node ini dan jalankan restore dengan
+          -e mariadb_restore_source=local -e mariadb_restore_source_host={{ inventory_hostname }}.
+        quiet: true
+
+  always:
+    - name: Remove the temporary authorization
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ _mariadb_restore_xfer_pub.content | b64decode | trim }}"
+        state: absent
+      when: _mariadb_restore_xfer_pub.content is defined
+
+    - name: Remove the temporary key from the source
+      ansible.builtin.file:
+        path: "{{ _mariadb_restore_xfer.path }}"
+        state: absent
+      delegate_to: "{{ _src }}"
+      when: _mariadb_restore_xfer.path is defined

@@ -23,6 +23,11 @@ Commands:
                                      (-e mariadb_backup_verify_backup=<chain_id>/<seq>,
                                      -e mariadb_backup_gpg_private_key=<file> for encrypted backups)
   backup-status -i <cluster> [args]  Show the backup status of every node
+  restore     -i <cluster> ${DESTROY_FLAG} -e mariadb_restore_backup=<latest|chain_id/seq> [args]
+                                     Replace the data with a backup (galera: whole cluster down until the
+                                     restore node is Synced). Options: -e mariadb_restore_source=<target>,
+                                     -e mariadb_restore_gpg_private_key=<file>, -e mariadb_restore_host=<node>,
+                                     -e mariadb_restore_allow_mode_change=true
   destroy     -i <cluster> ${DESTROY_FLAG} [--keep-data] [args]
                                      Stop everything and remove what Tera installed (packages stay).
                                      --keep-data keeps the datadir (galera: and the bootstrap marker,
@@ -170,7 +175,7 @@ main() {
       cmd_new_cluster "$@"
       return 0
       ;;
-    genpwd | prechecks | deploy | reconfigure | recover | destroy | backup | backup-verify | backup-status) ;;
+    genpwd | prechecks | deploy | reconfigure | recover | destroy | backup | backup-verify | backup-status | restore) ;;
     *)
       usage >&2
       die "perintah tidak dikenal: $cmd"
@@ -239,6 +244,10 @@ main() {
       ;;
     backup-status)
       run_playbook playbooks/mariadb-backup.yml -e tera_backup_op=status ${extra[@]+"${extra[@]}"}
+      ;;
+    restore)
+      $confirm || die "restore mengganti data. Ulangi dengan flag $DESTROY_FLAG jika yakin."
+      run_playbook playbooks/mariadb-restore.yml -e tera_restore_confirm=true ${extra[@]+"${extra[@]}"}
       ;;
     destroy)
       $confirm || die "destroy menghapus data. Ulangi dengan flag $DESTROY_FLAG jika yakin."

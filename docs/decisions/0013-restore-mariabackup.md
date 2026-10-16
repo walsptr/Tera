@@ -39,6 +39,8 @@ remote, sehingga data dikirim dari host backup ke node, diorkestrasi controller.
 - `mariadb_restore_host`: standalone = satu-satunya node; galera = default `mariadb_bootstrap_host`.
 - `mariadb_restore_source`: default `local` (`mariadb_backup_dir` di node yang membuat backup; jika bukan node
   restore, lihat "Pengiriman backup"); nama target berarti backup diambil dari host backup.
+- `mariadb_restore_source_host`: node yang backup-nya dipulihkan (default `mariadb_backup_host`), mis. backup
+  standalone yang tersimpan di node lain.
 - Private key gpg (jika backup terenkripsi) disalin ke keyring sementara di node restore (`no_log`) dan dihapus
   di akhir, juga saat gagal.
 
@@ -192,6 +194,9 @@ yang memakan ruang.
 - Node restore butuh ruang untuk staging + datadir lama sampai operator menghapusnya.
 - Controller membutuhkan akses SSH ke host backup (inventory group `mariadb_backup_target`) untuk restore dari
   remote.
+- Pengiriman dari host backup atau node lain membutuhkan sshd node restore yang menerima login kunci untuk root
+  (`PermitRootLogin prohibit-password`, default Ubuntu dan EL9). Jika tidak, tahap 1 gagal tanpa downtime dan
+  pesan error menjelaskan alternatif (salin rantai ke node restore, lalu `mariadb_restore_source: local`).
 - Setelah restore, rantai backup lama tetap ada sesuai retensi, tetapi backup berikutnya selalu full.
 
 ## Revisi
@@ -199,3 +204,6 @@ yang memakan ruang.
 - 2026-10-16: diterima setelah review pemilik proyek. Perubahan dari draft: override
   `mariadb_restore_allow_mode_change`, pengiriman dari host backup ke node dengan kunci sementara, dan
   penghentian backup terjadwal di semua node selama restore.
+- 2026-10-16: erratum saat implementasi (keputusan tidak berubah): variabel `mariadb_restore_source_host`, syarat
+  login kunci root di node restore untuk pengiriman, dan `needs-full` ditulis di setiap node yang punya
+  `tera-backup` (node backup bisa berganti).

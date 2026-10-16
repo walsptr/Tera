@@ -1,0 +1,27 @@
+---
+# tera restore stage 1 failed on the restore node: nothing was changed, so undo the backup pause on
+# every node (ADR 0013) and remove the staging directories.
+- name: Remove the restore marker on every node
+  ansible.builtin.file:
+    path: "{{ mariadb_restore_marker }}"
+    state: absent
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['mariadb'] }}"
+
+- name: Start the backup timers again
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+  delegate_to: "{{ mariadb_backup_host }}"
+  loop:
+    - tera-backup-full.timer
+    - tera-backup-incremental.timer
+  when: mariadb_backup_enabled | bool
+
+- name: Remove the staging directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ mariadb_backup_dir }}/.incoming/{{ _mariadb_restore_id }}"
+    - "{{ mariadb_backup_dir }}/.restore/{{ _mariadb_restore_id }}"
