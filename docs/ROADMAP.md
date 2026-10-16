@@ -89,6 +89,14 @@ Ditutup dengan tag `v0.4.0`.
 - [x] Restore standalone dan galera (prechecks ruang disk sebelum service dihentikan, pengiriman dari host backup, standalone → galera dengan override)
 - [x] Molecule `backup` dan `backup-galera`, plus backup/restore di `standalone-podman` (CI)
 
+Status: **selesai** (tag `v0.4.0`, 2026-10-16). Diverifikasi dari VM baru: `backup` di Ubuntu 22.04/24.04 dan
+Rocky 9; `backup-galera` di Ubuntu 24.04 dan Rocky 9; regresi `standalone` (Ubuntu 22.04/24.04, Rocky 9) dan
+`galera`, `reconfigure`, `recover`, `loadbalancer`, `destroy` (Ubuntu 24.04, Rocky 9) lulus; failover
+`loadbalancer` ≤ 4,9 detik, split brain 0. `standalone-podman` dengan backup/restore lulus di GitHub Actions
+(Ubuntu 22.04/24.04, Rocky 9, AlmaLinux 9). Tetap terbuka: `galera_position` di metadata bernilai `null`
+(mariabackup 11.4 tidak menuliskannya ke `--extra-lsndir`; restore tidak membutuhkannya), dan target S3/MinIO
+serta restore lintas cluster menunggu ADR.
+
 ## Fase 4b — Operasional
 
 - [ ] Upgrade minor rolling (patch dalam satu seri; perpindahan seri ditolak)
