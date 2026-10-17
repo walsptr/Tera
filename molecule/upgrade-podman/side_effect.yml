@@ -1,0 +1,184 @@
+---
+# Standalone upgrade side effects (ADR 0015): backups off is refused without the override; neither that nor
+# --check changes the node repository; Ubuntu: a foreign policy-rc.d that allows starts is left alone, the
+# package starts MariaDB and Tera stops it again; the node ends on the new version (packages, server,
+# mariadb_upgrade_info); a second upgrade skips the node and deploy is changed=0.
+- name: Make the foreign policy-rc.d allow starts (Ubuntu)
+  hosts: db01
+  gather_facts: true
+  tasks:
+    - name: Remember the OS family
+      ansible.builtin.set_fact:
+        _se_os: "{{ ansible_facts['os_family'] }}"
+
+    - name: Write a foreign policy-rc.d that allows everything
+      ansible.builtin.copy:
+        content: |
+          #!/bin/sh
+          # foreign policy-rc.d (not Tera's): allow every service
+          exit 0
+        dest: /usr/sbin/policy-rc.d
+        mode: "0755"
+      when: _se_os == 'Debian'
+
+    - name: Remember the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_before
+
+- name: Refused upgrade and --check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_repo_args:
+      - -e
+      - mariadb_repo_deb_url=https://mirror.mariadb.org/repo/11.4/ubuntu
+      - -e
+      - mariadb_repo_rpm_url=https://rpm.mariadb.org/11.4/rhel/9/$basearch
+  tasks:
+    - name: Run upgrade without backups and without the override
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest'] + _se_repo_args }}"
+          expect: "Backup tidak aktif"
+
+    - name: Run upgrade --check
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['--check', '-e', 'mariadb_upgrade_to=latest', '-e', 'mariadb_upgrade_allow_without_backup=true'] + _se_repo_args }}"
+          expect_success: true
+
+    - name: Assert --check showed the plan and upgraded nothing
+      ansible.builtin.assert:
+        that:
+          - _se_run.stdout is search('Akan di-upgrade')
+          - _se_run.stdout is not search('di-upgrade ke MariaDB')
+
+- name: Check the refused run and --check left the repository alone
+  hosts: db01
+  gather_facts: false
+  tasks:
+    - name: Check the node repository
+      ansible.builtin.include_tasks: ../shared/tasks/repo_unchanged.yml
+
+- name: Upgrade
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_repo_args:
+      - -e
+      - mariadb_repo_deb_url=https://mirror.mariadb.org/repo/11.4/ubuntu
+      - -e
+      - mariadb_repo_rpm_url=https://rpm.mariadb.org/11.4/rhel/9/$basearch
+  tasks:
+    - name: Run the upgrade
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest', '-e', 'mariadb_upgrade_allow_without_backup=true'] + _se_repo_args }}"
+          expect_success: true
+
+    - name: Assert the foreign policy-rc.d was reported and MariaDB was stopped again (Ubuntu)
+      ansible.builtin.assert:
+        that:
+          - _out is search('policy-rc.d yang bukan milik Tera')
+          - _out is search('paket menyalakan MariaDB di db01')
+          - "_out is search('db01: di-upgrade ke MariaDB')"
+      vars:
+        _out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+      when: hostvars['db01']['_se_os'] == 'Debian'
+
+    - name: Run the upgrade again
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest', '-e', 'mariadb_upgrade_allow_without_backup=true'] + _se_repo_args }}"
+          expect_success: true
+
+    - name: Assert the node was skipped
+      ansible.builtin.assert:
+        that:
+          - _out is search('versi target, dilewati')
+          - _out is not search('di-upgrade ke MariaDB')
+      vars:
+        _out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+
+    - name: Run deploy with the new repository
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: "{{ _se_repo_args }}"
+          expect_success: true
+
+    - name: Assert deploy after the upgrade changes nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks }}"
+
+- name: Check the upgraded node
+  hosts: db01
+  gather_facts: false
+  tasks:
+    - name: Collect installed packages
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Read the server version
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT @@version"
+      register: _se_version
+      changed_when: false
+
+    - name: Read mariadb_upgrade_info
+      ansible.builtin.slurp:
+        src: /var/lib/mysql/mariadb_upgrade_info
+      register: _se_info
+
+    - name: Read the policy-rc.d (Ubuntu)
+      ansible.builtin.slurp:
+        src: /usr/sbin/policy-rc.d
+      register: _se_policy
+      when: _se_os == 'Debian'
+
+    - name: Read the MariaDB start time again
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_after
+
+    - name: Assert the node is on the new version
+      ansible.builtin.assert:
+        that:
+          - _new is version(_from, '>')
+          - (_se_info.content | b64decode | trim) == _new ~ '-MariaDB'
+          - _old_packages | length == 0
+          - _se_started_after.status.ActiveEnterTimestampMonotonic != _se_started_before.status.ActiveEnterTimestampMonotonic
+          - _se_os != 'Debian' or (_se_policy.content | b64decode) is search('foreign policy-rc.d')
+        fail_msg: "version={{ _new }} info={{ _se_info.content | b64decode | trim }} old={{ _old_packages }}"
+      vars:
+        _from: "{{ lookup('ansible.builtin.env', 'TERA_UPGRADE_FROM') | default('11.4.11', true) }}"
+        _new: "{{ _se_version.stdout | regex_search('^[0-9]+[.][0-9]+[.][0-9]+') }}"
+        _old_packages: >-
+          {{ ansible_facts['packages'] | dict2items | selectattr('value.0.version', 'search', _from | regex_escape)
+             | map(attribute='key') | list }}
+
+    - name: Restore the image policy-rc.d (Ubuntu)
+      ansible.builtin.copy:
+        content: |
+          #!/bin/sh
+          exit 101
+        dest: /usr/sbin/policy-rc.d
+        mode: "0755"
+      when: _se_os == 'Debian'

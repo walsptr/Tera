@@ -1,0 +1,576 @@
+---
+# Upgrade side effects (docs/TESTING.md, ADR 0015). Converge installed TERA_UPGRADE_FROM from the archive;
+# every upgrade run passes the normal repository URLs (_se_repo_args).
+# 1. prechecks refuse: no target, another series, no verified backup, backups off without override; after
+#    a verified backup: a backup older than mariadb_upgrade_max_backup_age, a missing version, a downgrade
+#    (from an archive repository); --check only shows the plan; none of them changes the node repository.
+# 2. an upgrade interrupted (controller killed) on db02 after the drain (Rocky) or after the Tera
+#    policy-rc.d (Ubuntu): other services still start (Ubuntu), the next deploy removes the leftovers with
+#    warnings and db02 is UP in HAProxy again.
+# 3. the upgrade itself with a writer through the VIP (db03) and a probe from the host; Ubuntu: db02 lost
+#    mariadb_upgrade_info, so debian-start runs a full mariadb-upgrade that Tera must wait for.
+# 4. a second upgrade skips every node without restarting, and deploy is changed=0.
+- name: Read the OS of the nodes
+  hosts: mariadb
+  gather_facts: true
+  tasks:
+    - name: Remember the OS family
+      ansible.builtin.set_fact:
+        _se_os: "{{ ansible_facts['os_family'] }}"
+
+- name: Prepare the test client and the writes table
+  hosts: db03
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Write test client credentials
+      ansible.builtin.copy:
+        content: |
+          [client]
+          user = {{ mariadb_admin_user | default('tera_admin') }}
+          password = {{ mariadb_admin_password }}
+        dest: /root/tera-test.cnf
+        mode: "0600"
+      no_log: true
+
+    - name: Copy the writer
+      ansible.builtin.copy:
+        src: writer.sh
+        # /usr/local/sbin, not /root: systemd may not execute admin_home_t files under SELinux (Rocky).
+        dest: /usr/local/sbin/tera-writer.sh
+        mode: "0700"
+
+    - name: Create the writes table
+      ansible.builtin.command:
+        cmd: >-
+          mariadb -e "CREATE TABLE IF NOT EXISTS app.upgrade_writes
+          (id INT AUTO_INCREMENT PRIMARY KEY, ts DATETIME(6) DEFAULT NOW(6), h VARCHAR(32))"
+      changed_when: true
+
+- name: Negative prechecks
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_repo_args:
+      - -e
+      - mariadb_repo_deb_url=https://mirror.mariadb.org/repo/11.4/ubuntu
+      - -e
+      - mariadb_repo_rpm_url=https://rpm.mariadb.org/11.4/rhel/9/$basearch
+    _se_archive: https://archive.mariadb.org/mariadb-11.4.10
+  tasks:
+    - name: Run upgrade without a verified backup
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      loop:
+        - playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: []
+          expect: "Tentukan versi target"
+        - playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: [-e, mariadb_upgrade_to=11.8.1]
+          expect: "bukan patch dari seri 11.4"
+        - playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest'] + _se_repo_args }}"
+          expect: "Tidak ada backup terverifikasi"
+        - playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest', '-e', 'mariadb_backup_enabled=false'] + _se_repo_args }}"
+          expect: "Backup tidak aktif"
+      loop_control:
+        loop_var: _se_case
+        label: "{{ _se_case.expect }}"
+
+    - name: Take a full backup
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-backup.yml
+          args: [-e, tera_backup_op=run, -e, mariadb_backup_type=full]
+          expect_success: true
+
+    - name: Wait for the automatic verification
+      ansible.builtin.command:
+        cmd: /usr/local/sbin/tera-backup status
+      delegate_to: db03
+      become: true
+      register: _se_backup_status
+      until: ((_se_backup_status.stdout | default('{}') | from_json).verify | default({})).last.result | default('') == 'ok'
+      retries: 60
+      delay: 5
+      changed_when: false
+
+    - name: Let the backup age past one second
+      ansible.builtin.pause:
+        seconds: 2
+
+    - name: Run upgrade with a verified backup but bad settings
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      loop:
+        - playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest', '-e', 'mariadb_upgrade_max_backup_age=1'] + _se_repo_args }}"
+          expect: "berumur maksimal 1 detik"
+        - playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=11.4.99'] + _se_repo_args }}"
+          expect: "versi target tidak tersedia di repo"
+        - playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args:
+            - -e
+            - mariadb_upgrade_to=latest
+            - -e
+            - "mariadb_repo_deb_url={{ _se_archive }}/repo/ubuntu"
+            - -e
+            - "mariadb_repo_rpm_url={{ _se_archive }}/yum/rhel/9/x86_64"
+          expect: "Downgrade dan perpindahan seri ditolak"
+      loop_control:
+        loop_var: _se_case
+        label: "{{ _se_case.expect }}"
+
+    - name: Run upgrade --check
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['--check', '-e', 'mariadb_upgrade_to=latest'] + _se_repo_args }}"
+          expect_success: true
+
+    - name: Assert --check showed the plan and upgraded nothing
+      ansible.builtin.assert:
+        that:
+          - _se_run.stdout is search('Akan di-upgrade')
+          - _se_run.stdout is not search('di-upgrade ke MariaDB')
+
+- name: Check the refused runs and --check left the repository alone
+  hosts: mariadb
+  gather_facts: false
+  tasks:
+    - name: Check the node repository
+      ansible.builtin.include_tasks: ../shared/tasks/repo_unchanged.yml
+
+- name: Interrupted upgrade
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+    _se_ubuntu: "{{ hostvars['db02']['_se_os'] == 'Debian' }}"
+    # Ubuntu stops after the Tera policy-rc.d (MariaDB down), Rocky right after the drain (MariaDB up).
+    _se_pause_var: "{{ '__tera_test_upgrade_pause_after_policy' if _se_ubuntu else '__tera_test_upgrade_pause_after_drain' }}"
+    _se_pause_task: "{{ 'Pause after policy-rc.d' if _se_ubuntu else 'Pause after the drain' }}"
+  tasks:
+    - name: Start an upgrade that will be killed
+      ansible.builtin.shell:
+        cmd: >-
+          setsid ansible-playbook -i {{ _se_eph }}/inventory
+          {{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/playbooks/mariadb-upgrade.yml
+          -e tera_action=upgrade -e mariadb_upgrade_to=latest
+          -e mariadb_repo_deb_url=https://mirror.mariadb.org/repo/11.4/ubuntu
+          -e 'mariadb_repo_rpm_url=https://rpm.mariadb.org/11.4/rhel/9/$basearch'
+          -e {{ _se_pause_var }}=900
+          > {{ _se_eph }}/interrupted-upgrade.log 2>&1 < /dev/null & echo $!
+      environment:
+        ANSIBLE_NOCOLOR: "1"
+      register: _se_bg
+      changed_when: true
+
+    - name: Wait until the upgrade pauses on db02
+      ansible.builtin.wait_for:
+        path: "{{ _se_eph }}/interrupted-upgrade.log"
+        search_regex: "{{ _se_pause_task }}"
+        timeout: 900
+
+    - name: Let the pause start
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Kill the controller (no always section runs)
+      ansible.builtin.command:
+        cmd: kill -KILL -- -{{ _se_bg.stdout | trim }}
+      changed_when: true
+
+- name: Check the leftovers of the killed upgrade
+  hosts: db02
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the clustercheck socket state
+      ansible.builtin.systemd_service:
+        name: tera-clustercheck.socket
+      register: _se_socket
+
+    - name: Assert db02 is drained
+      ansible.builtin.assert:
+        that:
+          - _se_socket.status.ActiveState != 'active'
+
+    - name: Read the leftover policy-rc.d (Ubuntu)
+      ansible.builtin.slurp:
+        src: /usr/sbin/policy-rc.d
+      register: _se_policy
+      when: _se_os == 'Debian'
+
+    - name: Ask the leftover policy-rc.d about other services (Ubuntu)
+      ansible.builtin.command:
+        cmd: /usr/sbin/policy-rc.d {{ item }} start
+      loop:
+        - cron
+        - ssh.service
+        - mariadb
+      register: _se_policy_answers
+      changed_when: false
+      failed_when: false
+      when: _se_os == 'Debian'
+
+    - name: Restart another service through invoke-rc.d (Ubuntu)
+      ansible.builtin.command:
+        cmd: invoke-rc.d cron restart
+      register: _se_invoke_cron
+      changed_when: true
+      failed_when: false
+      when: _se_os == 'Debian'
+
+    - name: Assert only MariaDB is refused (Ubuntu)
+      ansible.builtin.assert:
+        that:
+          - (_se_policy.content | b64decode) is search('tera-policy-rc.d')
+          - _se_policy_answers.results | map(attribute='rc') | list == [0, 0, 101]
+          - _se_invoke_cron.rc == 0
+      when: _se_os == 'Debian'
+
+- name: Deploy after the killed upgrade
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run deploy
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+    - name: Assert deploy warned about every leftover
+      ansible.builtin.assert:
+        that:
+          - _se_out is search('tera-clustercheck.socket di db02 mati')
+          - _se_out is search('masih memegang lock backup dari tera upgrade yang terputus')
+          - hostvars['db02']['_se_os'] != 'Debian' or _se_out is search('masih punya /usr/sbin/policy-rc.d milik Tera')
+      vars:
+        _se_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+
+- name: Check db02 is back in the pool
+  hosts: db02
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the policy-rc.d is gone (Ubuntu)
+      ansible.builtin.stat:
+        path: /usr/sbin/policy-rc.d
+      register: _se_policy_after
+      when: _se_os == 'Debian'
+
+    - name: Assert the policy-rc.d is gone (Ubuntu)
+      ansible.builtin.assert:
+        that:
+          - not _se_policy_after.stat.exists
+      when: _se_os == 'Debian'
+
+    - name: Wait until HAProxy on every load balancer marks db02 UP
+      ansible.builtin.uri:
+        url: "http://{{ hostvars[item]['ip'] }}:8404/;csv"
+        url_username: tera
+        url_password: "{{ haproxy_stats_password }}"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['loadbalancer'] }}"
+      register: _se_stats
+      # CSV column 18 (status) of the row "mariadb,db02,...".
+      until: _se_stats.content | default('') is search('^mariadb,db02,(?:[^,]*,){15}UP,', multiline=True)
+      retries: 60
+      delay: 2
+
+- name: Upgrade
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+    _se_vip: "{{ hostvars['db01']['tera_vip_address'] }}"
+    _se_repo_args:
+      - -e
+      - mariadb_repo_deb_url=https://mirror.mariadb.org/repo/11.4/ubuntu
+      - -e
+      - mariadb_repo_rpm_url=https://rpm.mariadb.org/11.4/rhel/9/$basearch
+  tasks:
+    # Ubuntu: like a joiner after SST on Rocky, db02 has no mariadb_upgrade_info; debian-start then runs a
+    # full mariadb-upgrade in the background at the next start, and Tera must wait for it.
+    - name: Remove mariadb_upgrade_info on db02 (Ubuntu)
+      ansible.builtin.file:
+        path: /var/lib/mysql/mariadb_upgrade_info
+        state: absent
+      delegate_to: db02
+      become: true
+      when: hostvars['db02']['_se_os'] == 'Debian'
+
+    - name: Start the probe from the host
+      ansible.builtin.shell:
+        cmd: >-
+          nohup {{ ansible_playbook_python }} {{ playbook_dir }}/../loadbalancer/files/probe.py {{ _se_vip }} 3306
+          {{ _se_eph }}/probe.log > /dev/null 2>&1 & echo $!
+      register: _se_probe
+      changed_when: true
+
+    - name: Start the writer on db03
+      ansible.builtin.command:
+        cmd: systemd-run --unit=tera-test-writer --collect /usr/local/sbin/tera-writer.sh {{ _se_vip }} /var/log/tera-writer.log
+      delegate_to: db03
+      become: true
+      changed_when: true
+
+    - name: Wait for a steady baseline
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Run the upgrade
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest'] + _se_repo_args }}"
+          expect_success: true
+
+    - name: Remember the upgrade output
+      ansible.builtin.set_fact:
+        _se_upgrade_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+
+    - name: Let the writer run after the upgrade
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Stop the writer
+      ansible.builtin.file:
+        path: /root/tera-writer.stop
+        state: touch
+        mode: "0644"
+      delegate_to: db03
+      become: true
+
+    - name: Wait for the writer to stop
+      ansible.builtin.systemd_service:
+        name: tera-test-writer
+      delegate_to: db03
+      become: true
+      register: _se_writer_unit
+      until: _se_writer_unit.status.ActiveState | default('inactive') != 'active'
+      retries: 30
+      delay: 1
+      failed_when: false
+
+    - name: Stop the probe
+      ansible.builtin.command:
+        cmd: kill {{ _se_probe.stdout | trim }}
+      changed_when: true
+
+    - name: Fetch the writer log
+      ansible.builtin.fetch:
+        src: /var/log/tera-writer.log
+        dest: "{{ _se_eph }}/writer.log"
+        flat: true
+      delegate_to: db03
+      become: true
+
+    - name: Summarize probe and writer
+      ansible.builtin.command:
+        cmd: "{{ ansible_playbook_python }} {{ playbook_dir }}/files/check_upgrade.py {{ _se_eph }}/probe.log {{ _se_eph }}/writer.log"
+      register: _se_summary_raw
+      changed_when: false
+
+    - name: Save the summary
+      ansible.builtin.copy:
+        content: "{{ _se_summary_raw.stdout }}\n"
+        dest: "{{ _se_eph }}/upgrade-results.json"
+        mode: "0644"
+
+    - name: Set the summary
+      ansible.builtin.set_fact:
+        _se_summary: "{{ _se_summary_raw.stdout | from_json }}"
+
+    # Two interruptions per writer upgrade are accepted (ADR 0015); clients retry. Budget as in the
+    # loadbalancer scenario: <= 10 s outage, and only a handful of failed writes.
+    - name: Assert the clients saw short interruptions only
+      ansible.builtin.assert:
+        that:
+          - _se_summary.probe_lines > 100
+          - _se_summary.probe_longest_outage_s <= 10
+          - _se_summary.writer_ok > 100
+          - _se_summary.writer_fail <= 5
+          - _se_summary.writer_longest_outage_s <= 10
+        fail_msg: "{{ _se_summary | to_json }}"
+
+    - name: Assert the nodes were upgraded one by one, writer last
+      ansible.builtin.assert:
+        that:
+          - "_se_upgrade_out is search('db02: di-upgrade ke MariaDB')"
+          - "_se_upgrade_out is search('db03: di-upgrade ke MariaDB')"
+          - "_se_upgrade_out is search('db01: di-upgrade ke MariaDB')"
+          - "_se_upgrade_out.find('db02: di-upgrade') < _se_upgrade_out.find('db03: di-upgrade')"
+          - "_se_upgrade_out.find('db03: di-upgrade') < _se_upgrade_out.find('db01: di-upgrade')"
+
+- name: Check the upgraded cluster
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Collect installed packages
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Read version, rows and system tables
+      ansible.builtin.command:
+        cmd: >-
+          mariadb -N -B -e "SET SESSION group_concat_max_len = 1048576;
+          SELECT @@version;
+          SELECT COUNT(*) FROM app.upgrade_writes;
+          SELECT MD5(GROUP_CONCAT(CONCAT_WS('|', db, name, type, MD5(body), definer, sql_mode, security_type)
+            ORDER BY db, name, type SEPARATOR ',')) FROM mysql.proc;
+          SHOW GLOBAL STATUS LIKE 'wsrep_cluster_size'; SHOW GLOBAL STATUS LIKE 'wsrep_local_state'"
+      register: _se_node
+      changed_when: false
+
+    - name: Read mariadb_upgrade_info
+      ansible.builtin.slurp:
+        src: /var/lib/mysql/mariadb_upgrade_info
+      register: _se_info
+
+    - name: Check the policy-rc.d is gone
+      ansible.builtin.stat:
+        path: /usr/sbin/policy-rc.d
+      register: _se_policy_end
+
+    - name: Remember the node state
+      ansible.builtin.set_fact:
+        _se_state:
+          version: "{{ _se_node.stdout_lines[0] | regex_search('^[0-9]+[.][0-9]+[.][0-9]+') }}"
+          rows: "{{ _se_node.stdout_lines[1] | int }}"
+          proc: "{{ _se_node.stdout_lines[2] }}"
+          size: "{{ _se_node.stdout_lines[3].split() | last }}"
+          state: "{{ _se_node.stdout_lines[4].split() | last }}"
+          info: "{{ _se_info.content | b64decode | trim }}"
+          galera: "{{ ansible_facts['packages']['galera-4'][0].version | regex_search('^[0-9]+[.][0-9]+[.][0-9]+') }}"
+          old_packages: >-
+            {{ ansible_facts['packages'] | dict2items
+               | selectattr('value.0.version', 'search', (lookup('ansible.builtin.env', 'TERA_UPGRADE_FROM') | default('11.4.11', true) | regex_escape))
+               | map(attribute='key') | list }}
+
+    - name: Assert every node is on the same new version with the same data
+      ansible.builtin.assert:
+        that:
+          - _se_state.version is version(lookup('ansible.builtin.env', 'TERA_UPGRADE_FROM') | default('11.4.11', true), '>')
+          - _all | map(attribute='version') | unique | length == 1
+          - _all | map(attribute='galera') | unique | length == 1
+          - _all | map(attribute='rows') | unique | length == 1
+          - _all | map(attribute='proc') | unique | length == 1
+          - _all | map(attribute='info') | unique | list == [_se_state.version ~ '-MariaDB']
+          - _se_state.size == '3'
+          - _se_state.state == '4'
+          - _se_state.old_packages | length == 0
+          - not _se_policy_end.stat.exists or _se_os != 'Debian'
+        fail_msg: "{{ ansible_play_hosts | map('extract', hostvars, '_se_state') | list | to_json }}"
+      vars:
+        _all: "{{ ansible_play_hosts | map('extract', hostvars, '_se_state') | list }}"
+
+    # A write may commit while its client loses the connection (counted as failed), never the reverse.
+    - name: Assert every acknowledged write is there
+      ansible.builtin.assert:
+        that:
+          - _se_state.rows | int >= _sum.writer_ok
+          - _se_state.rows | int <= _sum.writer_ok + _sum.writer_fail
+        fail_msg: "rows={{ _se_state.rows }} summary={{ _sum }}"
+      vars:
+        _sum: "{{ hostvars['localhost']['_se_summary'] }}"
+
+    - name: Read the mariadb-upgrade log (Ubuntu db02)
+      ansible.builtin.shell:
+        cmd: cat /var/log/tera/mariadb-upgrade-*-mariadb-upgrade.log
+      register: _se_upg_log
+      changed_when: false
+      when:
+        - _se_os == 'Debian'
+        - inventory_hostname == 'db02'
+
+    # attempts > 1: the first check saw debian-start's mariadb-upgrade still running, Tera waited.
+    - name: Assert Tera waited for the mariadb-upgrade of debian-start (Ubuntu db02)
+      ansible.builtin.assert:
+        that:
+          - "(_se_upg_log.stdout | regex_search('checks before this run: [0-9]+') | split(': ') | last | int) > 1"
+        fail_msg: "{{ _se_upg_log.stdout_lines[:3] }}"
+      when:
+        - _se_os == 'Debian'
+        - inventory_hostname == 'db02'
+
+    - name: Remember the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_before
+
+- name: Second upgrade and deploy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_repo_args:
+      - -e
+      - mariadb_repo_deb_url=https://mirror.mariadb.org/repo/11.4/ubuntu
+      - -e
+      - mariadb_repo_rpm_url=https://rpm.mariadb.org/11.4/rhel/9/$basearch
+  tasks:
+    - name: Run the upgrade again
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest'] + _se_repo_args }}"
+          expect_success: true
+
+    - name: Assert every node was skipped
+      ansible.builtin.assert:
+        that:
+          - _out | regex_findall('versi target, dilewati') | length == 3
+          - _out is not search('di-upgrade ke MariaDB')
+      vars:
+        _out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+
+    - name: Run deploy with the new repository
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          args: "{{ _se_repo_args }}"
+          expect_success: true
+
+    - name: Assert deploy after the upgrade changes nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks }}"
+
+- name: Check nothing restarted
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the MariaDB start time again
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_started_after
+
+    - name: Assert MariaDB was not restarted
+      ansible.builtin.assert:
+        that:
+          - _se_started_after.status.ActiveEnterTimestampMonotonic == _se_started_before.status.ActiveEnterTimestampMonotonic

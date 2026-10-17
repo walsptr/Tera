@@ -1,0 +1,433 @@
+---
+# tera upgrade prechecks (ADR 0015). Every host of group mariadb, before anything is upgraded. The target
+# versions are resolved here once and must be the same on every node.
+- name: Run prechecks
+  ansible.builtin.import_tasks: prechecks.yml
+
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Refuse --limit on upgrade
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | sort == groups['mariadb'] | sort
+    fail_msg: >-
+      tera upgrade tidak boleh memakai --limit (host di run ini: {{ ansible_play_hosts_all | join(', ') }};
+      group mariadb: {{ groups['mariadb'] | join(', ') }}). Versi target dan kesehatan cluster dicek di semua
+      node; node yang sudah di versi target dilewati otomatis.
+    quiet: true
+
+- name: Check the upgrade target
+  ansible.builtin.assert:
+    that:
+      - mariadb_upgrade_to is string
+      - mariadb_upgrade_to == 'latest' or mariadb_upgrade_to is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+      - mariadb_upgrade_galera_to is string
+      - mariadb_upgrade_galera_to == 'latest' or mariadb_upgrade_galera_to is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+    fail_msg: >-
+      Tentukan versi target: ./tera upgrade -i inventory/<cluster> -e mariadb_upgrade_to=<{{ mariadb_version }}.x|latest>
+      (sekarang '{{ mariadb_upgrade_to }}'; mariadb_upgrade_galera_to '{{ mariadb_upgrade_galera_to }}').
+    quiet: true
+
+- name: Refuse a series change
+  ansible.builtin.assert:
+    that:
+      - mariadb_upgrade_to == 'latest' or (mariadb_upgrade_to.split('.')[0:2] | join('.')) == mariadb_version
+    fail_msg: >-
+      {{ mariadb_upgrade_to }} bukan patch dari seri {{ mariadb_version }} (mariadb_version). tera upgrade hanya
+      untuk upgrade minor dalam satu seri; perpindahan seri belum didukung (ADR 0015).
+    quiet: true
+
+- name: Clean leftovers of an interrupted upgrade
+  ansible.builtin.import_tasks: upgrade_leftovers.yml
+
+- name: Refuse an upgrade during a restore
+  ansible.builtin.stat:
+    path: "{{ mariadb_restore_marker }}"
+  register: _mariadb_upgrade_restore_marker
+
+- name: Check no restore is running
+  ansible.builtin.assert:
+    that:
+      - not _mariadb_upgrade_restore_marker.stat.exists
+    fail_msg: >-
+      {{ inventory_hostname }}: {{ mariadb_restore_marker }} ada, tera restore sedang berjalan atau terputus.
+      Selesaikan restore dulu (lihat docs/decisions/0013-restore-mariabackup.md).
+    quiet: true
+
+# --- Repository and versions ------------------------------------------------------------------
+
+- name: Collect installed packages
+  ansible.builtin.package_facts:
+    manager: auto
+
+# galera-4 is also installed in standalone on Ubuntu (a dependency of mariadb-server): upgrade it whenever present.
+- name: Decide whether galera-4 is upgraded
+  ansible.builtin.set_fact:
+    _mariadb_upgrade_has_galera: "{{ (mariadb_cluster_mode == 'galera') or ('galera-4' in ansible_facts['packages']) }}"
+
+# The repository may point to a new location (e.g. an archive URL for one patch version). With
+# mariadb_repo_manage the versions are read from a temporary probe of mariadb_repo_*_url; the node repository
+# is written only by upgrade_repo.yml, after every precheck passed (a refused run or --check changes nothing).
+- name: Read the available versions
+  block:
+    - name: Create the repository probe directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: tera-repo-probe.
+      register: _mariadb_upgrade_probe
+      changed_when: false
+      check_mode: false
+      when: mariadb_repo_manage | bool
+
+    - name: Create the apt probe directories
+      ansible.builtin.file:
+        path: "{{ _mariadb_upgrade_probe.path }}/{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - lists/partial
+        - cache/archives/partial
+        - parts
+      changed_when: false
+      check_mode: false
+      when:
+        - mariadb_repo_manage | bool
+        - ansible_facts['os_family'] == 'Debian'
+
+    - name: Download the repository key for the probe
+      ansible.builtin.get_url:
+        url: "{{ mariadb_repo_deb_key_url }}"
+        dest: "{{ _mariadb_upgrade_probe.path }}/key"
+        mode: "0644"
+      changed_when: false
+      check_mode: false
+      when:
+        - mariadb_repo_manage | bool
+        - ansible_facts['os_family'] == 'Debian'
+
+    # apt reads an ASCII-armored signed-by key only with the .asc extension (deb822_repository does the same).
+    - name: Name the probe key by its format
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - >-
+            cd "$1" && if grep -q 'BEGIN PGP PUBLIC KEY BLOCK' key; then mv key key.asc && echo key.asc;
+            else mv key key.gpg && echo key.gpg; fi
+          - sh
+          - "{{ _mariadb_upgrade_probe.path }}"
+      register: _mariadb_upgrade_probe_key
+      changed_when: false
+      check_mode: false
+      when:
+        - mariadb_repo_manage | bool
+        - ansible_facts['os_family'] == 'Debian'
+
+    - name: Write the probe source list
+      ansible.builtin.copy:
+        content: |
+          deb [signed-by={{ _key }}] {{ mariadb_repo_deb_url }} {{ ansible_facts['distribution_release'] }} main
+        dest: "{{ _mariadb_upgrade_probe.path }}/sources.list"
+        mode: "0644"
+      vars:
+        _key: "{{ _mariadb_upgrade_probe.path }}/{{ _mariadb_upgrade_probe_key.stdout }}"
+      changed_when: false
+      check_mode: false
+      when:
+        - mariadb_repo_manage | bool
+        - ansible_facts['os_family'] == 'Debian'
+
+    - name: Set the probe options
+      ansible.builtin.set_fact:
+        _mariadb_upgrade_probe_opts: >-
+          {{ [] if not (mariadb_repo_manage | bool)
+             else (['-o', 'Dir::Etc::sourcelist=' ~ _p ~ '/sources.list', '-o', 'Dir::Etc::sourceparts=' ~ _p ~ '/parts',
+                    '-o', 'Dir::State::Lists=' ~ _p ~ '/lists', '-o', 'Dir::Cache=' ~ _p ~ '/cache',
+                    '-o', 'APT::Sandbox::User=root']
+                   if ansible_facts['os_family'] == 'Debian'
+                   else ['--repofrompath=tera-probe,' ~ _rpm_url, '--repo=tera-probe',
+                         '--setopt=cachedir=' ~ _p, '--setopt=tera-probe.module_hotfixes=true']) }}
+      vars:
+        _p: "{{ _mariadb_upgrade_probe.path | default('') }}"
+        # dnf substitutes the variables of configured repositories, not necessarily of --repofrompath.
+        _rpm_url: >-
+          {{ mariadb_repo_rpm_url | replace('$basearch', ansible_facts['architecture'])
+             | replace('$releasever', ansible_facts['distribution_major_version']) }}
+
+    - name: Refresh the apt lists
+      ansible.builtin.command:
+        argv: "{{ ['apt-get', '-q', 'update'] + _mariadb_upgrade_probe_opts }}"
+      changed_when: false
+      check_mode: false
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Refresh the dnf metadata
+      ansible.builtin.command:
+        argv: "{{ ['dnf', '-q', 'makecache'] + (_mariadb_upgrade_probe_opts if mariadb_repo_manage | bool else ['--repo=mariadb']) }}"
+      changed_when: false
+      check_mode: false
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: List available versions (Debian)
+      ansible.builtin.command:
+        argv: "{{ ['apt-cache'] + _mariadb_upgrade_probe_opts + ['madison', item] }}"
+      loop: "{{ ['mariadb-server'] + (['galera-4'] if _mariadb_upgrade_has_galera | bool else []) }}"
+      register: _mariadb_upgrade_avail_deb
+      changed_when: false
+      check_mode: false
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: List available versions (RedHat)
+      ansible.builtin.command:
+        argv: >-
+          {{ ['dnf', '-q', 'repoquery'] + (_mariadb_upgrade_probe_opts if mariadb_repo_manage | bool else ['--repo=mariadb'])
+             + ['--qf', '%{version}-%{release}', item] }}
+      loop: "{{ ['MariaDB-server'] + (['galera-4'] if _mariadb_upgrade_has_galera | bool else []) }}"
+      register: _mariadb_upgrade_avail_rpm
+      changed_when: false
+      check_mode: false
+      when: ansible_facts['os_family'] == 'RedHat'
+
+  always:
+    - name: Remove the repository probe directory
+      ansible.builtin.file:
+        path: "{{ _mariadb_upgrade_probe.path }}"
+        state: absent
+      changed_when: false
+      check_mode: false
+      when: _mariadb_upgrade_probe.path is defined
+
+# Package versions: Debian "1:11.4.13+maria~ubu2404" (upstream 11.4.13), RedHat "11.4.13-1.el9" (version-release).
+# _avail: {name: [full version, ...]}; upstream = the X.Y.Z part.
+- name: Read the available versions
+  ansible.builtin.set_fact:
+    # Built with a statement block: render JSON and parse it (a block renders to a string, not a dict).
+    _mariadb_upgrade_avail: >-
+      {% set out = {} %}
+      {% if ansible_facts['os_family'] == 'Debian' %}
+      {%   for r in _mariadb_upgrade_avail_deb.results %}
+      {%     set _ = out.update({r.item: r.stdout_lines | map('split', '|') | map(attribute=1) | map('trim') | unique | list}) %}
+      {%   endfor %}
+      {% else %}
+      {%   for r in _mariadb_upgrade_avail_rpm.results %}
+      {%     set _ = out.update({r.item: r.stdout_lines | map('trim') | select | unique | list}) %}
+      {%   endfor %}
+      {% endif %}
+      {{ out | to_json }}
+    _mariadb_upgrade_server_pkg: "{{ _mariadb_packages[0] }}"
+
+- name: Resolve the target versions
+  ansible.builtin.set_fact:
+    _mariadb_upgrade_target: "{{ _target }}"
+    _mariadb_upgrade_target_full: "{{ _target_full }}"
+    _mariadb_upgrade_galera_target: "{{ _galera_target }}"
+    _mariadb_upgrade_galera_target_full: "{{ _galera_target_full }}"
+    _mariadb_upgrade_installed: "{{ _installed }}"
+  vars:
+    # First X.Y.Z in the version: "1:11.4.13+maria~ubu2404" -> 11.4.13 (no backslashes: see CONVENTIONS).
+    _re: '[0-9]+[.][0-9]+[.][0-9]+'
+    _avail: "{{ _mariadb_upgrade_avail | from_json }}"
+    _server_avail: "{{ _avail[_mariadb_upgrade_server_pkg] | default([]) }}"
+    _server_upstream: "{{ _server_avail | map('regex_search', _re) | map('default', '', true) | list }}"
+    _series_upstream: "{{ _server_upstream | select('match', '^' ~ (mariadb_version | regex_escape) ~ '[.]') | community.general.version_sort | list }}"
+    _target: "{{ (_series_upstream | last | default('')) if mariadb_upgrade_to == 'latest' else mariadb_upgrade_to }}"
+    _target_full: >-
+      {{ _server_avail | zip(_server_upstream) | selectattr('1', 'equalto', _target) | map(attribute=0)
+         | community.general.version_sort | last | default('') }}
+    _galera_avail: "{{ _avail['galera-4'] | default([]) }}"
+    _galera_upstream: "{{ _galera_avail | map('regex_search', _re) | map('default', '', true) | list }}"
+    _galera_target: >-
+      {{ '' if not (_mariadb_upgrade_has_galera | bool)
+         else ((_galera_upstream | community.general.version_sort | last | default(''))
+               if mariadb_upgrade_galera_to == 'latest' else mariadb_upgrade_galera_to) }}
+    _galera_target_full: >-
+      {{ _galera_avail | zip(_galera_upstream) | selectattr('1', 'equalto', _galera_target) | map(attribute=0)
+         | community.general.version_sort | last | default('') }}
+    _installed: >-
+      {{ (ansible_facts['packages'][_mariadb_upgrade_server_pkg] | default([{}]) | first).version | default('')
+         | regex_search(_re) | default('', true) }}
+
+- name: Check the target versions are available
+  ansible.builtin.assert:
+    that:
+      - _mariadb_upgrade_installed | length > 0
+      - _mariadb_upgrade_target_full | length > 0
+      - not (_mariadb_upgrade_has_galera | bool) or _mariadb_upgrade_galera_target_full | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }}: {% if _mariadb_upgrade_installed | length == 0 %}{{ _mariadb_upgrade_server_pkg }}
+      tidak terpasang; jalankan ./tera deploy dulu.{% else %}versi target tidak tersedia di repo
+      ({{ _mariadb_upgrade_server_pkg }} {{ mariadb_upgrade_to }} -> '{{ _mariadb_upgrade_target }}'{% if _mariadb_upgrade_has_galera | bool %},
+      galera-4 {{ mariadb_upgrade_galera_to }} -> '{{ _mariadb_upgrade_galera_target }}'{% endif %}). Versi di repo:
+      {{ _mariadb_upgrade_avail }}. Periksa mariadb_repo_deb_url/mariadb_repo_rpm_url; repo seri biasanya
+      hanya menyimpan patch terbaru, versi lama ada di archive.mariadb.org.{% endif %}
+    quiet: true
+
+- name: Check the installed series and refuse a downgrade
+  ansible.builtin.assert:
+    that:
+      - (_mariadb_upgrade_installed.split('.')[0:2] | join('.')) == mariadb_version
+      - _mariadb_upgrade_target is version(_mariadb_upgrade_installed, '>=')
+      - not (_mariadb_upgrade_has_galera | bool) or _mariadb_upgrade_galera_target is version(_mariadb_upgrade_galera_installed, '>=')
+    fail_msg: >-
+      {{ inventory_hostname }}: terpasang MariaDB {{ _mariadb_upgrade_installed }}{% if _mariadb_upgrade_has_galera | bool %},
+      galera-4 {{ _mariadb_upgrade_galera_installed }}{% endif %}; target {{ _mariadb_upgrade_target }}{% if _mariadb_upgrade_has_galera | bool %},
+      galera-4 {{ _mariadb_upgrade_galera_target }}{% endif %}. Downgrade dan perpindahan seri ditolak (mariadb_version
+      {{ mariadb_version }} harus sama dengan seri yang terpasang).
+    quiet: true
+  vars:
+    _mariadb_upgrade_galera_installed: >-
+      {{ (ansible_facts['packages']['galera-4'] | default([{}]) | first).version | default('0')
+         | regex_search('[0-9]+[.][0-9]+[.][0-9]+') | default('0', true) }}
+
+- name: Check every node resolved the same versions
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts | map('extract', hostvars, '_mariadb_upgrade_target') | unique | length == 1
+      - ansible_play_hosts | map('extract', hostvars, '_mariadb_upgrade_galera_target') | unique | length == 1
+    fail_msg: >-
+      Node tidak sepakat tentang versi target:
+      {% for h in ansible_play_hosts %}{{ h }}={{ hostvars[h]['_mariadb_upgrade_target'] }}/galera-4 {{ hostvars[h]['_mariadb_upgrade_galera_target'] }}
+      {% endfor %}. Samakan repo di semua node (mariadb_repo_*_url) atau tentukan versi eksplisit.
+    quiet: true
+
+# Every installed MariaDB package (Debian: versions "+maria~" from the MariaDB repository, RedHat: MariaDB-*)
+# and galera-4 go to the target; packages that are not installed are not added (ADR 0015).
+# noqa below: ansible-lint renders the variables as plain strings; at run time they are lists and dicts.
+- name: Build the package list # noqa: jinja[invalid]
+  ansible.builtin.set_fact:
+    _mariadb_upgrade_packages: "{{ _specs }}"
+    _mariadb_upgrade_needed: "{{ _outdated | length > 0 }}"
+    _mariadb_upgrade_outdated: "{{ _outdated }}"
+  vars:
+    _pkgs: "{{ ansible_facts['packages'] }}"
+    _mariadb_names: >-
+      {{ (_pkgs | dict2items | selectattr('value.0.version', 'search', '[+]maria')
+          | map(attribute='key') | list)
+         if ansible_facts['os_family'] == 'Debian'
+         else (_pkgs.keys() | select('match', '^MariaDB-') | list) }}
+    _current_json: >-
+      {% set out = {} %}
+      {% for n in _mariadb_names + (['galera-4'] if 'galera-4' in _pkgs else []) %}
+      {%   set p = _pkgs[n][0] %}
+      {%   set _ = out.update({n: p.version if ansible_facts['os_family'] == 'Debian' else p.version ~ '-' ~ p.release}) %}
+      {% endfor %}
+      {{ out | to_json }}
+    _current: "{{ _current_json | from_json }}"
+    _sep: "{{ '=' if ansible_facts['os_family'] == 'Debian' else '-' }}"
+    _specs_json: >-
+      {% set out = [] %}
+      {% for n in _current %}
+      {%   set _ = out.append(n ~ _sep ~ (_mariadb_upgrade_galera_target_full if n == 'galera-4' else _mariadb_upgrade_target_full)) %}
+      {% endfor %}
+      {{ out | sort | to_json }}
+    _specs: "{{ _specs_json | from_json }}"
+    _outdated: >-
+      {{ _current | dict2items | rejectattr('value', 'in', [_mariadb_upgrade_target_full, _mariadb_upgrade_galera_target_full])
+         | map(attribute='key') | list | sort }}
+
+# --- Cluster health ----------------------------------------------------------------------------
+
+- name: Read Galera status
+  ansible.builtin.include_tasks: status.yml
+  when: mariadb_cluster_mode == 'galera'
+
+- name: Read the node state
+  ansible.builtin.command:
+    cmd: >-
+      mariadb -N -B -e "SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_local_state', 'wsrep_cluster_size')"
+  register: _mariadb_upgrade_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check the cluster is healthy
+  ansible.builtin.assert:
+    that:
+      - _mariadb_upgrade_state.rc == 0
+      - mariadb_cluster_mode != 'galera' or (_mariadb_wsrep_primary | bool)
+      - mariadb_cluster_mode != 'galera' or _state.wsrep_local_state | default('') == '4'
+      - mariadb_cluster_mode != 'galera' or _state.wsrep_cluster_size | default('0') | int == groups['mariadb'] | length
+    fail_msg: >-
+      {{ inventory_hostname }}: {% if _mariadb_upgrade_state.rc != 0 %}MariaDB tidak berjalan atau tidak bisa
+      dihubungi{% else %}node tidak sehat (wsrep_local_state={{ _state.wsrep_local_state | default('?') }}, harus 4/Synced;
+      wsrep_cluster_size={{ _state.wsrep_cluster_size | default('?') }} dari {{ groups['mariadb'] | length }} node;
+      Primary={{ _mariadb_wsrep_primary | default(false) }}){% endif %}. Upgrade hanya berjalan di cluster yang
+      sehat; perbaiki dulu (./tera deploy atau ./tera recover).
+    quiet: true
+  vars:
+    _state: "{{ dict(_mariadb_upgrade_state.stdout_lines | map('split')) }}"
+
+- name: Read free space in /var
+  ansible.builtin.command:
+    cmd: df -m --output=avail /var
+  register: _mariadb_upgrade_df
+  changed_when: false
+  check_mode: false
+
+- name: Check free space for the packages
+  ansible.builtin.assert:
+    that:
+      - _mariadb_upgrade_df.stdout_lines | last | int >= mariadb_upgrade_min_free_mb | int
+    fail_msg: >-
+      {{ inventory_hostname }}: /var hanya punya {{ _mariadb_upgrade_df.stdout_lines | last | trim }} MiB bebas,
+      upgrade butuh minimal {{ mariadb_upgrade_min_free_mb }} MiB (mariadb_upgrade_min_free_mb).
+    quiet: true
+
+# --- Backup -------------------------------------------------------------------------------------
+
+- name: Read the backup status
+  ansible.builtin.slurp:
+    src: "{{ tera_state_dir }}/mariadb-backup.status"
+  delegate_to: "{{ mariadb_backup_host }}"
+  register: _mariadb_upgrade_backup_status
+  failed_when: false
+  check_mode: false
+  when: mariadb_backup_enabled | bool
+
+# The verified backup is the one in verify.last (result ok); its age comes from last_success of its type.
+- name: Check a recent verified backup exists
+  ansible.builtin.assert:
+    that:
+      - _verified | length > 0
+      - _age | int <= mariadb_upgrade_max_backup_age | int
+    fail_msg: >-
+      Upgrade butuh backup sukses yang lolos verifikasi, berumur maksimal {{ mariadb_upgrade_max_backup_age }} detik
+      (mariadb_upgrade_max_backup_age). {% if _verified | length == 0 %}Tidak ada backup terverifikasi di
+      {{ mariadb_backup_host }} (verify terakhir: {{ _status.verify.last.result | default('belum pernah') }}{% if _status.verify.last.message is defined %}:
+      {{ _status.verify.last.message }}{% endif %}).{% else %}Backup terverifikasi terakhir {{ _verified[0].backup }}
+      selesai {{ _verified[0].finished_at }} ({{ _age }} detik lalu).{% endif %} Jalankan ./tera backup -i
+      inventory/<cluster>, tunggu verifikasi otomatis (atau ./tera backup-verify untuk backup terenkripsi), lalu
+      ulangi upgrade.
+    quiet: true
+  vars:
+    _status: >-
+      {{ (_mariadb_upgrade_backup_status.content | b64decode | from_json)
+         if _mariadb_upgrade_backup_status.content is defined else {} }}
+    _verified: >-
+      {{ (_status.last_success | default({})).values() | list
+         | selectattr('backup', 'equalto', ((_status.verify | default({})).last | default({})).backup | default('-'))
+         | list
+         if ((_status.verify | default({})).last | default({})).result | default('') == 'ok' else [] }}
+    _age: >-
+      {{ ((now(utc=true) - (_verified[0].finished_at | to_datetime('%Y-%m-%dT%H:%M:%SZ'))).total_seconds() | int)
+         if _verified | length > 0 else 0 }}
+  when: mariadb_backup_enabled | bool
+
+- name: Refuse an upgrade without backups
+  ansible.builtin.assert:
+    that:
+      - mariadb_upgrade_allow_without_backup | bool
+    fail_msg: >-
+      Backup tidak aktif (mariadb_backup_enabled: false). Upgrade ditolak tanpa backup. Aktifkan backup dan jalankan
+      ./tera backup, atau, jika sengaja tanpa backup, ulangi dengan -e mariadb_upgrade_allow_without_backup=true.
+    quiet: true
+  when: not (mariadb_backup_enabled | bool)
+
+- name: Show the upgrade plan
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: MariaDB {{ _mariadb_upgrade_installed }} -> {{ _mariadb_upgrade_target }}{% if _mariadb_upgrade_has_galera | bool %},
+      galera-4 -> {{ _mariadb_upgrade_galera_target }}{% endif %}.
+      {% if _mariadb_upgrade_needed | bool %}Akan di-upgrade: {{ _mariadb_upgrade_outdated | join(', ') }}.{% else %}Sudah di
+      versi target, dilewati.{% endif %}

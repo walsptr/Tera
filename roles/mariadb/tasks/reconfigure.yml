@@ -5,6 +5,9 @@
 - name: Load variables
   ansible.builtin.import_tasks: vars.yml
 
+- name: Clean leftovers of an interrupted upgrade
+  ansible.builtin.import_tasks: upgrade_leftovers.yml
+
 - name: Open firewall ports
   ansible.builtin.include_tasks: firewall.yml
   when:

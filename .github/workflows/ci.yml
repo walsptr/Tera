@@ -26,7 +26,7 @@ jobs:
       - name: shellcheck
         run: |
           files=$(find . \( -path ./.git -o -path ./collections -o -path ./.venv \) -prune -o -type f \
-            \( -name '*.sh' -o -name tera -o -name 'backup-target-*' \) -print)
+            \( -name '*.sh' -o -name tera -o -name 'backup-target-*' -o -name 'tera-policy-rc.d' \) -print)
           if [ -n "$files" ]; then shellcheck $files; else echo "no shell scripts"; fi
 
   syntax-check:
@@ -84,3 +84,7 @@ jobs:
         env:
           TERA_PODMAN_IMAGE: ${{ matrix.image }}
         run: molecule test -s standalone-podman
+      - name: molecule test -s upgrade-podman
+        env:
+          TERA_PODMAN_IMAGE: ${{ matrix.image }}
+        run: molecule test -s upgrade-podman

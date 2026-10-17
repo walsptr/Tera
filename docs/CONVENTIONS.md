@@ -47,6 +47,10 @@ Dokumen ini wajib dibaca sebelum menulis kode.
 - Task yang memuat password: `no_log: true`, dan tetap isi `loop_control.label`. Catatan: di ansible-core
   terbaru (teruji 2.21) label ikut disensor saat `no_log: true`; keamanan password didahulukan.
 
+- **Nilai yang dibangun dengan blok `{% set %}`/`{% for %}` dirender sebagai string**, bukan dict/list (teruji
+  di ansible-core yang di-pin): lookup `x[key]` lalu diam-diam jatuh ke `default(...)`. Akhiri blok dengan
+  `{{ out | to_json }}` dan pakai nilainya lewat `| from_json` (contoh: `roles/mariadb/tasks/upgrade_prechecks.yml`).
+  Ekspresi filter tunggal (`{{ a | zip(b) | list }}`) tetap bertipe native.
 - **Variabel khusus test** (fault injection di Molecule) memakai prefix `__tera_test_` (mis.
   `__tera_test_fail_set_global_host`). Aturannya:
   - hanya di-set dari skenario Molecule (`molecule/`), tidak pernah di `inventory/sample/`, README, atau `docs/`

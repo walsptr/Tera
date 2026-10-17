@@ -69,6 +69,7 @@ Nilai yang wajib unik per cluster dan divalidasi di prechecks:
 | `deploy -i` | `site.yml` | `deploy` |
 | `reconfigure -i` | `site.yml` | `reconfigure` |
 | `recover -i [-e mariadb_recover_from=<node>]` | `playbooks/mariadb-recover.yml` | – |
+| `upgrade -i -e mariadb_upgrade_to=<X.Y.Z\|latest> [--check]` | `playbooks/mariadb-upgrade.yml` (ADR 0015) | `upgrade` |
 | `destroy -i … --yes-i-really-really-mean-it [--keep-data]` | `playbooks/destroy.yml` (`-e tera_destroy_confirm=true`, `--keep-data` → `-e tera_destroy_keep_data=true`) | – |
 | `backup -i [--incremental]` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=run -e mariadb_backup_type=full\|incremental`) | – |
 | `backup-verify -i` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=verify`) | – |
@@ -104,6 +105,23 @@ Perilaku CLI:
 | 9 | MariaDB backup | `mariadb` | alat, script, config, `known_hosts`, timer di `mariadb_backup_host`; peringatan jika backup mati |
 
 Setiap play memuat role `tera_defaults` dan memakai `any_errors_fatal: true`.
+
+## Alur play `playbooks/mariadb-upgrade.yml` (ADR 0015)
+
+| # | Play | Hosts | Catatan |
+|---|---|---|---|
+| 1 | Start | localhost | id run (nama file log di node) |
+| 2 | Facts | `mariadb:loadbalancer` | `tera_listen_address` |
+| 3 | Prechecks | `mariadb` | prechecks umum, sisa run terputus, versi target seragam (dibaca dari repo `mariadb_repo_*_url` lewat probe sementara, repo node belum diubah), seri/downgrade, cluster sehat, ruang `/var`, backup terverifikasi; menampilkan rencana |
+| 4 | Repo | `mariadb` | tulis repo node setelah semua prechecks lulus; cek repo menyediakan versi target |
+| 5 | Upgrade | `mariadb[1:]`, `serial: 1` | node non-writer, urutan inventory; hanya node yang belum di versi target |
+| 6 | Upgrade | `mariadb[0]`, `serial: 1` | writer `single_writer` paling akhir |
+
+Per node: lock backup (unit `tera-mariadb-upgrade-lock`), drain (`tera-clustercheck.socket` dihentikan, tunggu
+DOWN di stats HAProxy), stop, upgrade paket (Ubuntu: `policy-rc.d` Tera; retry; log), pastikan MariaDB masih
+mati, start, Synced, tunggu `mariadb-upgrade` dari `debian-start` (Ubuntu), `mariadb-upgrade --force`, cek
+`mariadb_upgrade_info`, undrain (blok `always`), tunggu UP. `--check` hanya menjalankan prechecks dan menampilkan
+perubahan repo tanpa menulisnya.
 
 ## Matriks action
 
@@ -176,7 +194,15 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_repo_manage` | `true` (set `false` jika node sudah punya repo/mirror sendiri) |
 | `mariadb_repo_deb_url` | `https://mirror.mariadb.org/repo/{{ mariadb_version }}/<distribution>` |
 | `mariadb_repo_rpm_url` | `https://rpm.mariadb.org/{{ mariadb_version }}/rhel/{{ distribution_major_version }}/$basearch` |
-| `mariadb_packages_extra` | `[]` |
+| `mariadb_packages_extra` | `[]` (dipasang tanpa paket yang dianjurkan, seperti paket MariaDB: `install_recommends`/`install_weak_deps` mati, ADR 0015) |
+| `mariadb_upgrade_to` | `""` (`tera upgrade`: patch dalam seri `mariadb_version`, mis. `"11.4.13"`, atau `latest`) |
+| `mariadb_upgrade_galera_to` | `latest` (versi galera-4; `latest` = tertinggi di repo) |
+| `mariadb_upgrade_max_backup_age` | `86400` (detik; umur maksimal backup terverifikasi saat backup aktif) |
+| `mariadb_upgrade_allow_without_backup` | `false` (`true` = upgrade boleh saat backup tidak aktif) |
+| `mariadb_upgrade_package_retries` / `mariadb_upgrade_package_delay` | `3` / `10` |
+| `mariadb_upgrade_min_free_mb` | `1024` (ruang bebas minimal di `/var`) |
+| `mariadb_upgrade_debian_start_timeout` | `600` (Ubuntu: tunggu `mariadb-upgrade` dari `debian-start`) |
+| `mariadb_upgrade_lb_timeout` | `60` (tunggu HAProxy menandai node DOWN/UP) |
 | `mariadb_admin_user` | `tera_admin` |
 | `mariadb_admin_hosts` | `["localhost"]` (list host/subnet, mis. `"10.10.10.%"`; `"%"` memicu warning prechecks; host yang dihapus dari list tidak di-drop otomatis) |
 | `mariadb_databases` / `mariadb_users` | `[]` |
@@ -290,6 +316,8 @@ di deploy, reconfigure, dan destroy, untuk role `mariadb` maupun `loadbalancer`.
 | Marker bootstrap | `/etc/tera/mariadb-galera.bootstrapped` |
 | Marker datadir | `/etc/tera/mariadb-datadir.initialized` (`0640 root:mysql`): ditulis setelah datadir pertama kali terinisialisasi; jika marker ada tetapi datadir kosong (tidak ada `mysql/`), deploy gagal dan meminta operator mengecek mount/disk, bukan menginisialisasi database baru |
 | Restart pending marker | `/etc/tera/mariadb-restart-pending` (`0640 root:mysql`, ADR 0009) |
+| Log upgrade | `/var/log/tera/mariadb-upgrade-<versi>-<id run>-{packages,mariadb-upgrade}.log` (`0640 root`, ADR 0015) |
+| Selama upgrade saja | `/usr/sbin/policy-rc.d` milik Tera (Ubuntu, hanya menolak `mariadb`), unit sementara `tera-mariadb-upgrade-lock.service` (memegang lock backup, file `/run/tera-mariadb-upgrade-lock.held`); sisa run terputus dibersihkan `deploy`/`reconfigure`/`upgrade` dengan peringatan |
 | Modul SELinux (RHEL, galera) | `/etc/tera/selinux/tera_galera.{te,mod,pp}`, dimuat dengan `semodule` |
 | Kredensial clustercheck | `/etc/tera/clustercheck.cnf` (`0640 root:mysql`) |
 | Script clustercheck | `/usr/local/bin/tera-clustercheck` |

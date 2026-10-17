@@ -1,0 +1,56 @@
+---
+# Write the MariaDB repository for tera upgrade (ADR 0015). Runs on every mariadb node after
+# upgrade_prechecks.yml passed everywhere, before the first node is upgraded: a refused run leaves the
+# repository as it was. Then the node repository must offer the versions the prechecks resolved.
+- name: Configure the MariaDB repository
+  ansible.builtin.import_tasks: repo.yml
+
+- name: Refresh the dnf metadata
+  ansible.builtin.command:
+    cmd: dnf -q makecache --repo mariadb
+  changed_when: false
+  when:
+    - ansible_facts['os_family'] == 'RedHat'
+    - not ansible_check_mode
+
+- name: List the target versions in the node repository
+  ansible.builtin.command:
+    argv: >-
+      {{ ['apt-cache', 'madison', item.name] if ansible_facts['os_family'] == 'Debian'
+         else ['dnf', '-q', 'repoquery', '--repo=mariadb', '--qf', '%{version}-%{release}', item.name] }}
+  loop: >-
+    {{ [{'name': _mariadb_upgrade_server_pkg, 'version': _mariadb_upgrade_target_full}]
+       + ([{'name': 'galera-4', 'version': _mariadb_upgrade_galera_target_full}] if _mariadb_upgrade_has_galera | bool else []) }}
+  loop_control:
+    label: "{{ item.name }}"
+  register: _mariadb_upgrade_repo_avail
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Check the node repository offers the target versions
+  ansible.builtin.assert:
+    that:
+      - _missing | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: repo node tidak menyediakan {{ _missing | join(', ') }}, padahal prechecks
+      menemukannya di {{ mariadb_repo_deb_url if ansible_facts['os_family'] == 'Debian' else mariadb_repo_rpm_url }}.
+      Repo sudah ditulis, belum ada node yang di-upgrade. Periksa repo lain di node yang menimpa repo mariadb.
+    quiet: true
+  vars:
+    # Debian: "mariadb-server | 1:11.4.13+maria~ubu2404 | https://... Packages"; RedHat: one version per line.
+    # Built with a statement block: render JSON and parse it (a block renders to a string, not a list).
+    _missing_json: >-
+      {% set out = [] %}
+      {% for r in _mariadb_upgrade_repo_avail.results %}
+      {%   if ansible_facts['os_family'] == 'Debian' %}
+      {%     set v = r.stdout_lines | map('split', '|') | map(attribute=1) | map('trim') | list %}
+      {%   else %}
+      {%     set v = r.stdout_lines | map('trim') | list %}
+      {%   endif %}
+      {%   if r.item.version not in v %}
+      {%     set _ = out.append(r.item.name ~ ' ' ~ r.item.version) %}
+      {%   endif %}
+      {% endfor %}
+      {{ out | to_json }}
+    _missing: "{{ _missing_json | from_json }}"
+  when: not ansible_check_mode

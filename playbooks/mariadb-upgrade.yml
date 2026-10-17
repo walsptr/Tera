@@ -1,0 +1,91 @@
+---
+# tera upgrade (docs/decisions/0015-rolling-minor-upgrade.md): patch upgrade within the mariadb_version
+# series. Prechecks resolve one target version for every node; then one node at a time (serial: 1,
+# max_fail_percentage: 0), the galera writer (first mariadb node, mariadb[0] in inventory order) last.
+# The node repository is written only after the prechecks passed; --check only shows the plan.
+- name: Start upgrade
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Set the upgrade run id
+      ansible.builtin.set_fact:
+        tera_upgrade_run_id: "{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%dT%H%M%SZ') }}"
+
+- name: Gather facts for upgrade
+  hosts: mariadb:loadbalancer
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Set tera_listen_address
+      ansible.builtin.include_tasks: tasks/listen_address.yml
+
+- name: Upgrade prechecks
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run upgrade prechecks
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: upgrade_prechecks.yml
+
+# Only after every precheck passed on every node: a refused run leaves the repository as it was.
+- name: Configure the repository for upgrade
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Write the MariaDB repository
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: upgrade_repo.yml
+
+- name: Upgrade mariadb (other nodes first)
+  hosts: mariadb[1:]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  serial: 1
+  max_fail_percentage: 0
+  vars:
+    tera_upgrade_id: "{{ hostvars['localhost']['tera_upgrade_run_id'] }}"
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Upgrade the node
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: upgrade.yml
+      when:
+        - _mariadb_upgrade_needed | bool
+        - not ansible_check_mode
+
+- name: Upgrade mariadb (writer last)
+  hosts: mariadb[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  serial: 1
+  max_fail_percentage: 0
+  vars:
+    tera_upgrade_id: "{{ hostvars['localhost']['tera_upgrade_run_id'] }}"
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Upgrade the node
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: upgrade.yml
+      when:
+        - _mariadb_upgrade_needed | bool
+        - not ansible_check_mode

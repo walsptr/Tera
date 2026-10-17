@@ -102,7 +102,7 @@ serta restore lintas cluster menunggu ADR.
 - [x] Penerima restore khusus `tera-restore` dan kunci sementara ber-TTL (ADR 0014; Molecule `backup` Ubuntu 22.04/24.04 dan Rocky 9, `backup-galera` Ubuntu 24.04 dan Rocky 9)
 - [x] Kecil: `mariadbd` sementara untuk verifikasi/restore berjalan sebagai user `mysql`, bukan root (perbaiki izin direktori kerja)
 - [x] Kecil: field `galera_position` dihapus dari metadata backup (`format_version` tetap 1)
-- [ ] Upgrade minor rolling (patch dalam satu seri; perpindahan seri ditolak)
+- [x] Upgrade minor rolling (patch dalam satu seri; perpindahan seri ditolak; ADR 0015; Molecule `upgrade` Ubuntu 24.04 dan Rocky 9, `upgrade-podman` 4 image; `standalone` dan `galera` ulang dari VM baru di Ubuntu 24.04 dan Rocky 9)
 - [ ] Exporter monitoring (`mysqld_exporter`, `node_exporter` opsional)
 - [ ] Scale in
 - [ ] `SET GLOBAL` tanpa restart (paling akhir)

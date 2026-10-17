@@ -1,0 +1,25 @@
+---
+# A refused upgrade and --check leave the node repository on the converge repository (TERA_UPGRADE_FROM)
+# and leave no probe directory behind (ADR 0015). Needs _se_os (os_family) on the host.
+- name: Read the node repository
+  ansible.builtin.slurp:
+    src: "{{ '/etc/apt/sources.list.d/mariadb.sources' if _se_os == 'Debian' else '/etc/yum.repos.d/mariadb.repo' }}"
+  become: true
+  register: _se_repo_file
+
+- name: Find leftover repository probes
+  ansible.builtin.find:
+    paths: /tmp
+    patterns: tera-repo-probe.*
+    file_type: directory
+  become: true
+  register: _se_probes
+
+- name: Assert the repository is unchanged and no probe is left
+  ansible.builtin.assert:
+    that:
+      - (_se_repo_file.content | b64decode) is search('archive.mariadb.org/mariadb-' ~ (_se_from | regex_escape) ~ '/')
+      - _se_probes.matched == 0
+    fail_msg: "{{ _se_repo_file.content | b64decode }} / probes: {{ _se_probes.files | map(attribute='path') | list }}"
+  vars:
+    _se_from: "{{ lookup('ansible.builtin.env', 'TERA_UPGRADE_FROM') | default('11.4.11', true) }}"

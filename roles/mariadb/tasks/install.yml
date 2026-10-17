@@ -1,41 +1,28 @@
 ---
-- name: Configure MariaDB upstream repository (Debian)
-  ansible.builtin.deb822_repository:
-    name: mariadb
-    types: deb
-    uris: "{{ mariadb_repo_deb_url }}"
-    suites: "{{ ansible_facts['distribution_release'] }}"
-    components: main
-    signed_by: "{{ mariadb_repo_deb_key_url }}"
-    state: present
-  register: _mariadb_repo_deb
-  when:
-    - mariadb_repo_manage | bool
-    - ansible_facts['os_family'] == 'Debian'
+- name: Configure the MariaDB repository
+  ansible.builtin.import_tasks: repo.yml
 
-# A handler would run too late: packages from the new repository are installed below.
-- name: Update apt cache after repository change # noqa: no-handler
-  ansible.builtin.apt:
-    update_cache: true
-  when: _mariadb_repo_deb is changed
-
-- name: Configure MariaDB upstream repository (RedHat)
-  ansible.builtin.yum_repository:
-    name: mariadb
-    description: MariaDB {{ mariadb_version }}
-    baseurl: "{{ mariadb_repo_rpm_url }}"
-    gpgkey: "{{ mariadb_repo_rpm_key_url }}"
-    gpgcheck: true
-    module_hotfixes: true
-    state: present
-  when:
-    - mariadb_repo_manage | bool
-    - ansible_facts['os_family'] == 'RedHat'
-
+# Recommended/weak packages are never installed (ADR 0015): Tera's dependencies are listed explicitly in
+# vars/<os_family>.yml. Packages already installed are not removed.
 - name: Install MariaDB packages
-  ansible.builtin.package:
-    name: "{{ _mariadb_packages + (_mariadb_galera_packages if mariadb_cluster_mode == 'galera' else []) + mariadb_packages_extra }}"
-    state: present
+  vars:
+    _mariadb_install_packages: >-
+      {{ _mariadb_packages + (_mariadb_galera_packages if mariadb_cluster_mode == 'galera' else [])
+         + mariadb_packages_extra }}
+  block:
+    - name: Install MariaDB packages (Debian)
+      ansible.builtin.apt:
+        name: "{{ _mariadb_install_packages }}"
+        state: present
+        install_recommends: false
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Install MariaDB packages (RedHat)
+      ansible.builtin.dnf:
+        name: "{{ _mariadb_install_packages }}"
+        state: present
+        install_weak_deps: false
+      when: ansible_facts['os_family'] == 'RedHat'
 
 # Datadir guard. The package initializes the datadir only when it is installed; after `tera destroy`
 # (packages stay, datadir and /etc/tera removed) deploy initializes it again. Once a datadir was

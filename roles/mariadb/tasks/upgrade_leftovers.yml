@@ -1,0 +1,77 @@
+---
+# Leftovers of an interrupted tera upgrade (ADR 0015), cleaned at the start of deploy, reconfigure and
+# upgrade: Tera's policy-rc.d (Ubuntu), the backup lock holder and a drained node (clustercheck socket
+# stopped). A foreign policy-rc.d (without the Tera marker) is never touched.
+- name: Read policy-rc.d
+  ansible.builtin.slurp:
+    src: /usr/sbin/policy-rc.d
+  register: _mariadb_policy_rc_d
+  failed_when: false
+  check_mode: false
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Remove a Tera policy-rc.d left by an interrupted upgrade
+  when:
+    - ansible_facts['os_family'] == 'Debian'
+    - _mariadb_policy_rc_d.content is defined
+    - (_mariadb_policy_rc_d.content | b64decode) is search('tera-policy-rc.d')
+  block:
+    - name: Warn about the leftover policy-rc.d
+      ansible.builtin.debug:
+        msg: >-
+          PERINGATAN: {{ inventory_hostname }} masih punya /usr/sbin/policy-rc.d milik Tera dari tera upgrade yang
+          terputus (MariaDB tidak bisa dinyalakan lewat paket). File itu dihapus sekarang.
+
+    - name: Remove the leftover policy-rc.d
+      ansible.builtin.file:
+        path: /usr/sbin/policy-rc.d
+        state: absent
+
+- name: Check for a leftover upgrade lock holder
+  ansible.builtin.systemd_service:
+    name: tera-mariadb-upgrade-lock.service
+  register: _mariadb_upgrade_lock_unit
+  failed_when: false
+  check_mode: false
+
+- name: Release a leftover upgrade lock holder
+  when: (_mariadb_upgrade_lock_unit.status | default({})).ActiveState | default('') in ['active', 'activating']
+  block:
+    - name: Warn about the leftover lock holder
+      ansible.builtin.debug:
+        msg: >-
+          PERINGATAN: {{ inventory_hostname }} masih memegang lock backup dari tera upgrade yang terputus
+          (tera-mariadb-upgrade-lock.service); backup terjadwal tertahan. Lock dilepas sekarang.
+
+    - name: Stop the leftover lock holder
+      ansible.builtin.systemd_service:
+        name: tera-mariadb-upgrade-lock.service
+        state: stopped
+
+- name: Check the clustercheck socket
+  ansible.builtin.systemd_service:
+    name: tera-clustercheck.socket
+  register: _mariadb_clustercheck_unit
+  failed_when: false
+  check_mode: false
+  when: mariadb_cluster_mode == 'galera'
+
+# A stopped socket keeps the node out of the HAProxy pool (drain of an interrupted upgrade).
+- name: Bring a drained node back into the pool
+  when:
+    - mariadb_cluster_mode == 'galera'
+    - (_mariadb_clustercheck_unit.status | default({})).UnitFileState | default('') == 'enabled'
+    - (_mariadb_clustercheck_unit.status | default({})).ActiveState | default('') != 'active'
+  block:
+    - name: Warn about the stopped clustercheck socket
+      ansible.builtin.debug:
+        msg: >-
+          PERINGATAN: tera-clustercheck.socket di {{ inventory_hostname }} mati (status
+          {{ _mariadb_clustercheck_unit.status.ActiveState | default('?') }}), sehingga HAProxy menganggap node ini DOWN;
+          kemungkinan sisa tera upgrade yang terputus. Socket dinyalakan sekarang; node masuk pool lagi setelah
+          Synced.
+
+    - name: Start the clustercheck socket
+      ansible.builtin.systemd_service:
+        name: tera-clustercheck.socket
+        state: started

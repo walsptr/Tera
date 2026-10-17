@@ -17,6 +17,9 @@ Commands:
   deploy      -i <cluster> [args]    Deploy or converge the cluster
   reconfigure -i <cluster> [args]    Apply config changes, rolling restart if needed
   recover     -i <cluster> [args]    Recover a Galera cluster after full outage
+  upgrade     -i <cluster> -e mariadb_upgrade_to=<X.Y.Z|latest> [args]
+                                     Rolling patch upgrade within mariadb_version (galera: one node at a
+                                     time, writer last). --check shows the plan only
   backup      -i <cluster> [--incremental] [args]
                                      Take a backup now on mariadb_backup_host (default full)
   backup-verify -i <cluster> [args]  Unpack, prepare and check the latest backup
@@ -175,7 +178,7 @@ main() {
       cmd_new_cluster "$@"
       return 0
       ;;
-    genpwd | prechecks | deploy | reconfigure | recover | destroy | backup | backup-verify | backup-status | restore) ;;
+    genpwd | prechecks | deploy | reconfigure | recover | upgrade | destroy | backup | backup-verify | backup-status | restore) ;;
     *)
       usage >&2
       die "perintah tidak dikenal: $cmd"
@@ -233,6 +236,9 @@ main() {
       ;;
     recover)
       run_playbook playbooks/mariadb-recover.yml ${extra[@]+"${extra[@]}"}
+      ;;
+    upgrade)
+      run_playbook playbooks/mariadb-upgrade.yml -e tera_action=upgrade ${extra[@]+"${extra[@]}"}
       ;;
     backup)
       local type=full

@@ -1,0 +1,43 @@
+---
+# Wait until every load balancer sees this node in the wanted state (_mariadb_lb_wait_for: down | up), read
+# from the HAProxy stats CSV of backend "mariadb" (column 18, status: UP, DOWN, "UP 1/3", "DOWN 1/2", MAINT).
+- name: Wait for HAProxy to mark the node {{ _mariadb_lb_wait_for | upper }}
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item]['tera_listen_address'] }}:{{ haproxy_stats_port }}/;csv"
+    url_username: "{{ haproxy_stats_user }}"
+    url_password: "{{ haproxy_stats_password }}"
+    force_basic_auth: true
+    return_content: true
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['loadbalancer'] }}"
+  register: _mariadb_lb_stats
+  until: >-
+    _mariadb_lb_stats.status | default(0) == 200
+    and (_row | length > 17)
+    and ((_row[17] is match('^(DOWN|MAINT)')) if _mariadb_lb_wait_for == 'down' else (_row[17] == 'UP'))
+  retries: "{{ mariadb_upgrade_lb_timeout | int }}"
+  delay: 1
+  failed_when: false
+  vars:
+    _row: >-
+      {{ (_mariadb_lb_stats.content | default('')).splitlines()
+         | select('match', '^mariadb,' ~ inventory_hostname ~ ',') | first | default('') | split(',') }}
+
+- name: Check HAProxy marked the node {{ _mariadb_lb_wait_for | upper }}
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) == 200
+      - _row | length > 17
+      - (_row[17] is match('^(DOWN|MAINT)')) if _mariadb_lb_wait_for == 'down' else (_row[17] == 'UP')
+    fail_msg: >-
+      {{ inventory_hostname }}: HAProxy di {{ item.item }} belum menandai node ini {{ _mariadb_lb_wait_for | upper }}
+      setelah {{ mariadb_upgrade_lb_timeout }} detik (status '{{ _row[17] | default('?') }}', HTTP
+      {{ item.status | default('?') }}; mariadb_upgrade_lb_timeout). Periksa halaman stats HAProxy.
+    quiet: true
+  loop: "{{ _mariadb_lb_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  vars:
+    _row: >-
+      {{ (item.content | default('')).splitlines()
+         | select('match', '^mariadb,' ~ inventory_hostname ~ ',') | first | default('') | split(',') }}

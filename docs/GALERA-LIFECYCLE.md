@@ -108,6 +108,29 @@ Dievaluasi setelah config ditulis, sebelum start/restart.
 - Jika satu node gagal, run berhenti; node lain tidak disentuh (`serial: 1`, `max_fail_percentage: 0`).
 - Tidak memakai handler.
 
+## Upgrade minor (ADR 0015)
+
+`tera upgrade -i … -e mariadb_upgrade_to=<X.Y.Z|latest>` meng-upgrade patch dalam seri `mariadb_version`.
+
+1. Prechecks di semua node: sisa run terputus dibersihkan (dengan peringatan), versi target MariaDB dan galera-4
+   ditentukan **sekali** dari repo `mariadb_repo_*_url` (probe sementara, repo node belum diubah) dan harus sama
+   di semua node; seri lain, downgrade, versi yang tidak ada di repo, cluster tidak Primary/Synced/lengkap, ruang
+   `/var` kurang, `--limit`, restore yang aktif, dan backup terverifikasi yang lebih tua dari
+   `mariadb_upgrade_max_backup_age` ditolak. Run yang ditolak dan `--check` tidak mengubah repo node.
+   Setelah semua prechecks lulus, repo node ditulis dan dicek menyediakan versi target.
+2. Satu node per kali (`serial: 1`, `max_fail_percentage: 0`), node non-writer dulu dalam urutan inventory,
+   writer (`mariadb[0]`) paling akhir. Node yang sudah di versi target dilewati (tidak di-restart).
+3. Per node, di bawah lock backup: drain (`tera-clustercheck.socket` dihentikan, tunggu DOWN di HAProxy) → stop →
+   upgrade paket (Ubuntu: `policy-rc.d` Tera yang hanya menolak `mariadb`) → MariaDB yang dinyalakan paket
+   dihentikan lagi dengan peringatan → start → tunggu Synced (biasanya IST) → Ubuntu: tunggu `mariadb-upgrade`
+   dari `debian-start` selesai → `mariadb-upgrade --force` (lokal, tidak tereplikasi; wajib di setiap node) →
+   undrain → tunggu UP di HAProxy.
+4. Socket clustercheck dan lock dipulihkan di blok `always`. Jika controller terputus, `deploy`, `reconfigure`,
+   atau `upgrade` berikutnya menyalakan socket, melepas lock, dan menghapus `policy-rc.d` Tera, dengan peringatan.
+
+Upgrade paket gagal setelah retry: node itu dibiarkan **mati** (paket mungkin setengah terpasang) dan run
+berhenti; node lain tidak disentuh. Perbaiki penyebabnya (log di `/var/log/tera/`), lalu ulangi `tera upgrade`.
+
 ## Reconfigure
 
 1. Prechecks.
@@ -198,4 +221,6 @@ SST untuk data besar bisa butuh nilai yang lebih tinggi; naikkan di `group_vars`
 - Restart pada run tanpa perubahan config (dan tanpa restart pending marker).
 - Config baru yang sudah ditulis tidak pernah aktif karena run sebelumnya terputus.
 - Restart MariaDB saat backup sedang berjalan di node itu.
+- Paket MariaDB menyalakan MariaDB sendiri di tengah `tera upgrade`, atau dua `mariadb-upgrade` berjalan bersamaan.
+- Lebih dari satu node di-upgrade bersamaan, atau writer di-upgrade sebelum node lain.
 - Backup dibuat saat restore berjalan atau terputus.

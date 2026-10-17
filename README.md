@@ -224,6 +224,28 @@ gpg --armor --export backup@example.com > inventory/prod-b/config/backup/backup.
   node harus mengizinkan user `tera-restore` (periksa `AllowUsers`/`AllowGroups`). Jika tidak, restore gagal
   sebelum MariaDB dihentikan dengan pesan yang menjelaskan penyebabnya.
 
+## Upgrade minor (patch dalam satu seri)
+
+```bash
+./tera backup  -i inventory/prod-b                                    # jika backup aktif: butuh backup terverifikasi <= 24 jam
+./tera upgrade -i inventory/prod-b -e mariadb_upgrade_to=latest --check   # lihat rencana: versi target per node
+./tera upgrade -i inventory/prod-b -e mariadb_upgrade_to=latest           # atau versi eksplisit, mis. 11.4.13
+```
+
+- Hanya patch dalam seri `mariadb_version` (mis. 11.4.11 → 11.4.13). Perpindahan seri dan downgrade ditolak.
+  `latest` diterjemahkan sekali ke satu versi untuk semua node, dan galera-4 ikut ke versi terbaru di repo.
+- Galera: satu node per kali, writer paling akhir; setiap node dikeluarkan dulu dari HAProxy. Upgrade writer
+  memberi **dua gangguan** seperti rolling restart (failover, lalu sesi di node cadangan diputus saat writer
+  kembali). Koneksi baru yang kebetulan sedang tersambung saat itu juga bisa gagal. **Aplikasi wajib me-retry
+  koneksi dan transaksi.** Standalone: MariaDB mati selama upgrade paket.
+- Backup aktif: upgrade butuh backup sukses yang lolos verifikasi, maksimal `mariadb_upgrade_max_backup_age`
+  (default 24 jam). Backup tidak aktif: ditolak kecuali `-e mariadb_upgrade_allow_without_backup=true`.
+- Repo seri upstream biasanya hanya menyimpan patch terbaru; versi tertentu yang lebih lama ada di
+  `archive.mariadb.org` (atur `mariadb_repo_deb_url`/`mariadb_repo_rpm_url`).
+- Log setiap operasi paket dan `mariadb-upgrade` ada di `/var/log/tera/` di setiap node.
+- Tera memasang paket MariaDB **tanpa** paket yang dianjurkan (Recommends/weak dependencies), saat deploy dan
+  upgrade. Paket yang sudah terpasang tidak dihapus.
+
 ## Destroy
 
 ```bash
@@ -257,7 +279,10 @@ tidak dihapus. Dengan `--keep-data` di cluster Galera, deploy berikutnya akan me
   lama jika ada banyak tabel non-InnoDB. Salinan InnoDB berjalan saat node tetap melayani. Dengan 3 node, selama
   jendela itu hanya satu kandidat failover yang tersisa. `mariadb_backup_throttle` memperpanjang jendela ini.
 - **Rolling restart menunggu backup** yang sedang berjalan di node itu (maks `mariadb_backup_lock_timeout`,
-  default 2 jam), lalu gagal dengan pesan jika backup belum selesai.
+  default 2 jam), lalu gagal dengan pesan jika backup belum selesai. `tera upgrade` juga.
+- **Sisa `tera upgrade` yang terputus dibersihkan otomatis.** `deploy`/`reconfigure`/`upgrade` berikutnya
+  menyalakan lagi socket clustercheck (node kembali ke pool), melepas lock backup, dan menghapus
+  `/usr/sbin/policy-rc.d` milik Tera, masing-masing dengan peringatan. `policy-rc.d` lain tidak disentuh.
 
 ## Firewall
 

@@ -1,0 +1,66 @@
+---
+# Standalone upgrade in a systemd container (ADR 0015, docs/TESTING.md): converge installs an older patch from
+# archive.mariadb.org (TERA_UPGRADE_FROM, default 11.4.11), the side effect upgrades to the latest patch of the
+# normal repository, without backups (override). Ubuntu images ship a foreign /usr/sbin/policy-rc.d; the side
+# effect turns it into one that allows starts, so the package starts MariaDB and Tera must stop it again.
+# Same images as standalone-podman (TERA_PODMAN_IMAGE).
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+platforms:
+  - name: db01
+    image: ${TERA_PODMAN_IMAGE:-docker.io/library/ubuntu:22.04}
+    dockerfile: ../standalone-podman/Dockerfile.j2
+    pre_build_image: false
+    command: /sbin/init
+    systemd: always
+    groups:
+      - mariadb
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+    ANSIBLE_FILTER_PLUGINS: ${MOLECULE_PROJECT_DIRECTORY}/plugins/filter
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/collections
+  playbooks:
+    prepare: ../shared/prepare.yml
+    converge: ../shared/converge.yml
+    side_effect: side_effect.yml
+    verify: ../shared/verify.yml
+  inventory:
+    group_vars:
+      all:
+        # Molecule connects to the container as root: no sudo needed. On GitHub runners (rootless
+        # podman) sudo root -> root fails in the Rocky/Alma images with a PAM account error.
+        ansible_become: false
+        tera_action: deploy
+        tera_config_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/config
+        # Test-only password, generated outside the repo in the ephemeral directory.
+        mariadb_admin_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/admin_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_admin_hosts:
+          - localhost
+          - "{{ tera_listen_address }}"
+        mariadb_databases:
+          - name: app
+        mariadb_repo_deb_url: https://archive.mariadb.org/mariadb-${TERA_UPGRADE_FROM:-11.4.11}/repo/ubuntu
+        mariadb_repo_rpm_url: https://archive.mariadb.org/mariadb-${TERA_UPGRADE_FROM:-11.4.11}/yum/rhel/9/x86_64
+    host_groups:
+      loadbalancer: {}
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - destroy
+verifier:
+  name: ansible

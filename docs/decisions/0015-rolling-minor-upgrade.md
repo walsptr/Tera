@@ -135,3 +135,14 @@ README dan ARCHITECTURE mencatatnya. Pemindahan writer sementara selama upgrade 
   membawa `policy-rc.d` asing); `mariadb-upgrade --force` tidak berjalan bersamaan dengan `mariadb-upgrade` dari
   `debian-start` (dibuktikan dengan journal/urutan proses); upgrade yang diputus setelah drain tidak meninggalkan
   node keluar dari pool HAProxy setelah `deploy` berikutnya (backend UP, peringatan socket mati tampil).
+
+## Revisi
+
+- 2026-10-17: tambahan saat implementasi; keputusan di atas tidak berubah. Diusulkan Claude setelah test VM
+  `upgrade` pertama, disetujui pemilik proyek 2026-10-17. Prechecks membaca versi dari `mariadb_repo_*_url` lewat
+  probe sementara tanpa mengubah repo node (apt: `sources.list`, lists, dan cache di direktori sementara; dnf:
+  `--repofrompath` dengan `cachedir` sementara). Repo node ditulis di play terpisah setelah prechecks lulus di
+  semua node, lalu dicek bahwa repo itu menyediakan versi target, sebelum node pertama di-upgrade. Run yang ditolak
+  dan `--check` tidak mengubah repo node. Sebelumnya prechecks menulis repo lebih dulu, sehingga run yang ditolak
+  meninggalkan repo baru di node (mis. seri lain, yang bisa terpasang lewat `apt upgrade` manual), dan `--check`
+  menghitung rencana dari repo lama.

@@ -5,7 +5,6 @@
 # Sources allowed to reach the HAProxy stats page (haproxy_stats_port) when Tera manages firewalld:
 # IPv4/CIDR list. Empty = only the load balancer nodes themselves.
 haproxy_stats_sources: []
-haproxy_stats_user: tera
 # Client and server timeouts; MariaDB closes idle sessions after wait_timeout (28800 s = 8 h).
 haproxy_timeout_client: 8h
 haproxy_timeout_server: 8h

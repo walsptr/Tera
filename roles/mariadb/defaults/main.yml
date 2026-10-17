@@ -54,3 +54,22 @@ mariadb_databases: []
 #     priv: "app.*:ALL"          # optional
 #     state: present             # optional
 mariadb_users: []
+
+# --- Upgrade (ADR 0015) -------------------------------------------------------
+# Target of `tera upgrade`: a patch version in the mariadb_version series ("11.4.13") or "latest" (highest
+# version in the configured repository). Resolved once at the start of the run, the same on every node.
+mariadb_upgrade_to: ""
+# galera-4 target, same rules ("latest" = highest version in the repository).
+mariadb_upgrade_galera_to: latest
+# With backups on, upgrade needs a successful, verified backup at most this old (seconds).
+mariadb_upgrade_max_backup_age: 86400
+# Backups off: upgrade is refused unless this is true.
+mariadb_upgrade_allow_without_backup: false
+# Package operations: retries (with a delay) and the free space needed in /var (MiB).
+mariadb_upgrade_package_retries: 3
+mariadb_upgrade_package_delay: 10
+mariadb_upgrade_min_free_mb: 1024
+# Ubuntu: how long to wait for the background mariadb-upgrade of /etc/mysql/debian-start (seconds).
+mariadb_upgrade_debian_start_timeout: 600
+# How long to wait for HAProxy to mark a node DOWN after the drain / UP after it (seconds).
+mariadb_upgrade_lb_timeout: 60

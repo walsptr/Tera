@@ -48,6 +48,8 @@ tera_vip_address: ""
 tera_vip_cidr_prefix: 32
 keepalived_virtual_router_id: 51
 haproxy_stats_port: 8404
+# Stats page user (password: haproxy_stats_password); tera upgrade reads the stats to follow the drain.
+haproxy_stats_user: tera
 
 # --- MariaDB ----------------------------------------------------------------
 mariadb_cluster_mode: standalone # standalone | galera

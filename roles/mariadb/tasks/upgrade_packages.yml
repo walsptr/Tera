@@ -1,0 +1,111 @@
+---
+# Package step of upgrade.yml (ADR 0015). MariaDB is already stopped. The output of every attempt is kept on
+# the node; the package command is retried (mariadb_upgrade_package_retries).
+- name: Read policy-rc.d
+  ansible.builtin.slurp:
+    src: /usr/sbin/policy-rc.d
+  register: _mariadb_upgrade_policy
+  failed_when: false
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Set the policy-rc.d state
+  ansible.builtin.set_fact:
+    _mariadb_upgrade_foreign_policy: >-
+      {{ (ansible_facts['os_family'] == 'Debian') and (_mariadb_upgrade_policy.content is defined)
+         and not ((_mariadb_upgrade_policy.content | b64decode) is search('tera-policy-rc.d')) }}
+
+- name: Warn about a foreign policy-rc.d
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: {{ inventory_hostname }} sudah punya /usr/sbin/policy-rc.d yang bukan milik Tera. Tera tidak
+      mengubahnya dan tidak memasang miliknya; jika paket tetap menyalakan MariaDB, Tera menghentikannya lagi.
+  when: _mariadb_upgrade_foreign_policy | bool
+
+- name: Upgrade the packages
+  block:
+    # Ubuntu: the package would start MariaDB again even when it was stopped (spike 2026-10-16).
+    - name: Install the Tera policy-rc.d
+      ansible.builtin.copy:
+        src: tera-policy-rc.d
+        dest: /usr/sbin/policy-rc.d
+        owner: root
+        group: root
+        mode: "0755"
+      when:
+        - ansible_facts['os_family'] == 'Debian'
+        - not (_mariadb_upgrade_foreign_policy | bool)
+
+    - name: Pause after policy-rc.d (test-only fault injection)
+      ansible.builtin.pause:
+        seconds: "{{ __tera_test_upgrade_pause_after_policy }}"
+      when: (__tera_test_upgrade_pause_after_policy | default(0) | int) > 0
+
+    # command, not the apt/dnf modules: the full output of every attempt is saved (ADR 0015).
+    - name: Upgrade the MariaDB packages
+      ansible.builtin.command:
+        argv: >-
+          {{ (['apt-get', '-y', '-q', '--no-install-recommends', '-o', 'Dpkg::Options::=--force-confold',
+               '-o', 'Dpkg::Options::=--force-confdef', 'install']
+              if ansible_facts['os_family'] == 'Debian'
+              else ['dnf', '-y', '--setopt=install_weak_deps=False', 'install'])
+             + _mariadb_upgrade_packages }}
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: _mariadb_upgrade_pkg
+      until: _mariadb_upgrade_pkg.rc == 0
+      retries: "{{ mariadb_upgrade_package_retries }}"
+      delay: "{{ mariadb_upgrade_package_delay }}"
+      changed_when: true
+      failed_when: false
+
+  always:
+    - name: Remove the Tera policy-rc.d
+      ansible.builtin.file:
+        path: /usr/sbin/policy-rc.d
+        state: absent
+      when:
+        - ansible_facts['os_family'] == 'Debian'
+        - not (_mariadb_upgrade_foreign_policy | bool)
+
+- name: Save the package output
+  ansible.builtin.copy:
+    content: |
+      # tera upgrade {{ tera_upgrade_id }} on {{ inventory_hostname }}: {{ _mariadb_upgrade_pkg.cmd | default([]) | join(' ') }}
+      # rc={{ _mariadb_upgrade_pkg.rc | default('?') }} attempts={{ _mariadb_upgrade_pkg.attempts | default(1) }}
+      {{ _mariadb_upgrade_pkg.stdout | default('') }}
+      {{ _mariadb_upgrade_pkg.stderr | default('') }}
+    dest: "{{ _mariadb_upgrade_log }}-packages.log"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Check the package upgrade succeeded
+  ansible.builtin.assert:
+    that:
+      - _mariadb_upgrade_pkg.rc == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: upgrade paket gagal setelah {{ _mariadb_upgrade_pkg.attempts | default(1) }} percobaan
+      (rc={{ _mariadb_upgrade_pkg.rc }}). Output lengkap: {{ _mariadb_upgrade_log }}-packages.log.
+      {{ _mariadb_upgrade_pkg.stderr | default('') | truncate(600) }}
+      MariaDB di node ini mati; perbaiki penyebabnya lalu ulangi tera upgrade.
+    quiet: true
+
+- name: Check MariaDB is still stopped
+  ansible.builtin.systemd_service:
+    name: "{{ _mariadb_service }}"
+  register: _mariadb_upgrade_active
+
+# E.g. a foreign policy-rc.d that allows starts, or a package that starts the service on its own.
+- name: Stop MariaDB started by the package
+  when: _mariadb_upgrade_active.status.ActiveState | default('') in ['active', 'activating', 'reloading']
+  block:
+    - name: Warn about MariaDB started by the package
+      ansible.builtin.debug:
+        msg: >-
+          PERINGATAN: paket menyalakan MariaDB di {{ inventory_hostname }} saat upgrade (status
+          {{ _mariadb_upgrade_active.status.ActiveState }}). Tera menghentikannya lagi lalu melanjutkan alur normal.
+
+    - name: Stop MariaDB again
+      ansible.builtin.systemd_service:
+        name: "{{ _mariadb_service }}"
+        state: stopped
