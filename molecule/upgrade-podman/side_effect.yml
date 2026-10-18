@@ -1,8 +1,9 @@
 ---
 # Standalone upgrade side effects (ADR 0015): backups off is refused without the override; neither that nor
-# --check changes the node repository; Ubuntu: a foreign policy-rc.d that allows starts is left alone, the
-# package starts MariaDB and Tera stops it again; the node ends on the new version (packages, server,
-# mariadb_upgrade_info); a second upgrade skips the node and deploy is changed=0.
+# --check changes the node repository; an explicit older patch (TERA_UPGRADE_TO) is installed exactly, then
+# latest goes further; Ubuntu: a foreign policy-rc.d that allows starts is left alone, the package starts
+# MariaDB and Tera stops it again; the node ends on the latest version (packages, server,
+# mariadb_upgrade_info); a further upgrade skips the node and deploy is changed=0.
 - name: Make the foreign policy-rc.d allow starts (Ubuntu)
   hosts: db01
   gather_facts: true
@@ -68,24 +69,26 @@
     - name: Check the node repository
       ansible.builtin.include_tasks: ../shared/tasks/repo_unchanged.yml
 
-- name: Upgrade
+- name: Upgrade to an explicit patch
   hosts: localhost
   connection: local
   gather_facts: false
   vars:
+    _se_to: "{{ lookup('ansible.builtin.env', 'TERA_UPGRADE_TO') | default('11.4.12', true) }}"
     _se_repo_args:
       - -e
       - mariadb_repo_deb_url=https://mirror.mariadb.org/repo/11.4/ubuntu
       - -e
       - mariadb_repo_rpm_url=https://rpm.mariadb.org/11.4/rhel/9/$basearch
   tasks:
-    - name: Run the upgrade
+    # An explicit target below the latest patch of the repository (TERA_UPGRADE_TO, default 11.4.12).
+    - name: Run the upgrade to an explicit older patch
       ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
       vars:
         _se_case:
           playbook: playbooks/mariadb-upgrade.yml
           action: upgrade
-          args: "{{ ['-e', 'mariadb_upgrade_to=latest', '-e', 'mariadb_upgrade_allow_without_backup=true'] + _se_repo_args }}"
+          args: "{{ ['-e', 'mariadb_upgrade_to=' ~ _se_to, '-e', 'mariadb_upgrade_allow_without_backup=true'] + _se_repo_args }}"
           expect_success: true
 
     - name: Assert the foreign policy-rc.d was reported and MariaDB was stopped again (Ubuntu)
@@ -97,6 +100,61 @@
       vars:
         _out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
       when: hostvars['db01']['_se_os'] == 'Debian'
+
+- name: Check the node is on the explicit target
+  hosts: db01
+  gather_facts: false
+  tasks:
+    - name: Collect installed packages
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Read the server version
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT @@version"
+      register: _se_version_explicit
+      changed_when: false
+
+    - name: Assert every MariaDB package is on the explicit target, not on the latest patch
+      ansible.builtin.assert:
+        that:
+          - _se_version_explicit.stdout is match(_to | regex_escape ~ '-')
+          - _mariadb | length > 0
+          - _mariadb | rejectattr('value.0.version', 'search', _to | regex_escape) | list | length == 0
+        fail_msg: "version={{ _se_version_explicit.stdout }} packages={{ _mariadb | items2dict(value_name='value') | to_json }}"
+      vars:
+        _to: "{{ lookup('ansible.builtin.env', 'TERA_UPGRADE_TO') | default('11.4.12', true) }}"
+        # Debian: versions "+maria~" from the MariaDB repository; RedHat: MariaDB-* (galera-4 has its own versions).
+        _mariadb: >-
+          {{ ansible_facts['packages'] | dict2items
+             | selectattr('value.0.version', 'search', '[+]maria' if _se_os == 'Debian' else '.')
+             | selectattr('key', 'match', '.' if _se_os == 'Debian' else '^MariaDB-')
+             | list }}
+
+- name: Upgrade to the latest patch
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_repo_args:
+      - -e
+      - mariadb_repo_deb_url=https://mirror.mariadb.org/repo/11.4/ubuntu
+      - -e
+      - mariadb_repo_rpm_url=https://rpm.mariadb.org/11.4/rhel/9/$basearch
+  tasks:
+    - name: Run the upgrade to latest
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          playbook: playbooks/mariadb-upgrade.yml
+          action: upgrade
+          args: "{{ ['-e', 'mariadb_upgrade_to=latest', '-e', 'mariadb_upgrade_allow_without_backup=true'] + _se_repo_args }}"
+          expect_success: true
+
+    - name: Assert the node was upgraded again
+      ansible.builtin.assert:
+        that:
+          - "_se_run.stdout is search('db01: di-upgrade ke MariaDB')"
 
     - name: Run the upgrade again
       ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
@@ -162,6 +220,7 @@
       ansible.builtin.assert:
         that:
           - _new is version(_from, '>')
+          - _new is version(lookup('ansible.builtin.env', 'TERA_UPGRADE_TO') | default('11.4.12', true), '>')
           - (_se_info.content | b64decode | trim) == _new ~ '-MariaDB'
           - _old_packages | length == 0
           - _se_started_after.status.ActiveEnterTimestampMonotonic != _se_started_before.status.ActiveEnterTimestampMonotonic

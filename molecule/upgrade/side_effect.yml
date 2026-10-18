@@ -6,7 +6,7 @@
 #    (from an archive repository); --check only shows the plan; none of them changes the node repository.
 # 2. an upgrade interrupted (controller killed) on db02 after the drain (Rocky) or after the Tera
 #    policy-rc.d (Ubuntu): other services still start (Ubuntu), the next deploy removes the leftovers with
-#    warnings and db02 is UP in HAProxy again.
+#    warnings, no Tera policy-rc.d is left and every node is UP in HAProxy again.
 # 3. the upgrade itself with a writer through the VIP (db03) and a probe from the host; Ubuntu: db02 lost
 #    mariadb_upgrade_info, so debian-start runs a full mariadb-upgrade that Tera must wait for.
 # 4. a second upgrade skips every node without restarting, and deploy is changed=0.
@@ -188,10 +188,54 @@
       ansible.builtin.pause:
         seconds: 3
 
-    - name: Kill the controller (no always section runs)
-      ansible.builtin.command:
-        cmd: kill -KILL -- -{{ _se_bg.stdout | trim }}
+    # ansible-core workers run in their own session (os.setsid in WorkerProcess), so killing the process
+    # group of the controller leaves the paused worker alive: kill the whole process tree instead.
+    - name: Kill the controller and its workers (no always section runs)
+      ansible.builtin.shell:
+        cmd: |
+          set -uo pipefail
+          tree() { echo "$1"; for c in $(ps -o pid= --ppid "$1"); do tree "$c"; done; }
+          case "$(ps -o args= -p {{ _se_bg.stdout | trim }})" in
+            *ansible-playbook*) ;;
+            *) echo "not a controller"; exit 1 ;;
+          esac
+          pids=$(tree {{ _se_bg.stdout | trim }})
+          kill -STOP $pids
+          kill -KILL $pids
+          for _ in $(seq 1 20); do
+            alive=$(ps -o pid=,stat= -p "$(echo $pids | tr ' ' ',')" | awk '$2 !~ /^Z/ {print $1}' || true)
+            [ -z "$alive" ] && { echo "killed: $pids"; exit 0; }
+            sleep 0.5
+          done
+          echo "still alive: $alive"
+          exit 1
+        executable: /bin/bash
       changed_when: true
+
+    - name: Look for a leftover upgrade controller
+      ansible.builtin.command:
+        cmd: pgrep -a -f playbooks/mariadb-upgrade[.]yml
+      register: _se_leftover_controller
+      changed_when: false
+      failed_when: false
+
+    - name: Read the log of the killed upgrade
+      ansible.builtin.slurp:
+        src: "{{ _se_eph }}/interrupted-upgrade.log"
+      register: _se_interrupted_log
+
+    # The run stopped inside the pause on db02: the pause is the last task started, there is no recap.
+    - name: Assert the upgrade was cut at the intended point and nothing of it is left
+      ansible.builtin.assert:
+        that:
+          - _se_leftover_controller.rc == 1
+          - _tasks | length > 0
+          - _tasks | last is search(_se_pause_task)
+          - _log is not search('PLAY RECAP')
+        fail_msg: "processes={{ _se_leftover_controller.stdout_lines | to_json }} last task={{ _tasks | last | default('') }}"
+      vars:
+        _log: "{{ _se_interrupted_log.content | b64decode }}"
+        _tasks: "{{ _log | regex_findall('^TASK \\[[^\\n]*', multiline=True) }}"
 
 - name: Check the leftovers of the killed upgrade
   hosts: db02
@@ -203,10 +247,34 @@
         name: tera-clustercheck.socket
       register: _se_socket
 
-    - name: Assert db02 is drained
+    - name: Read the HAProxy state on every load balancer
+      ansible.builtin.uri:
+        url: "http://{{ hostvars[item]['ip'] }}:8404/;csv"
+        url_username: tera
+        url_password: "{{ haproxy_stats_password }}"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['loadbalancer'] }}"
+      register: _se_stats_killed
+
+    - name: Collect installed packages
+      ansible.builtin.package_facts:
+        manager: auto
+
+    # Interrupted before the package step: the server package is still on TERA_UPGRADE_FROM.
+    - name: Assert db02 is drained, DOWN on every load balancer and not upgraded
       ansible.builtin.assert:
         that:
           - _se_socket.status.ActiveState != 'active'
+          - _se_stats_killed.results | rejectattr('content', 'search', _down, multiline=True) | list | length == 0
+          - ansible_facts['packages'][_pkg][0]['version'] is search(_from | regex_escape)
+        fail_msg: "socket={{ _se_socket.status.ActiveState }} server={{ ansible_facts['packages'][_pkg] | default([]) | to_json }}"
+      vars:
+        _from: "{{ lookup('ansible.builtin.env', 'TERA_UPGRADE_FROM') | default('11.4.11', true) }}"
+        _pkg: "{{ 'mariadb-server' if _se_os == 'Debian' else 'MariaDB-server' }}"
+        # CSV column 18 (status) of the row "mariadb,db02,...".
+        _down: '^mariadb,db02,(?:[^,]*,){15}DOWN'
 
     - name: Read the leftover policy-rc.d (Ubuntu)
       ansible.builtin.slurp:
@@ -262,8 +330,9 @@
       vars:
         _se_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
 
-- name: Check db02 is back in the pool
-  hosts: db02
+# Every node, not only db02: no Tera policy-rc.d left and every backend UP on every load balancer.
+- name: Check every node is back in the pool
+  hosts: mariadb
   become: true
   gather_facts: false
   tasks:
@@ -279,7 +348,17 @@
           - not _se_policy_after.stat.exists
       when: _se_os == 'Debian'
 
-    - name: Wait until HAProxy on every load balancer marks db02 UP
+    - name: Read the clustercheck socket state after deploy
+      ansible.builtin.systemd_service:
+        name: tera-clustercheck.socket
+      register: _se_socket_after
+
+    - name: Assert the clustercheck socket is active again
+      ansible.builtin.assert:
+        that:
+          - _se_socket_after.status.ActiveState == 'active'
+
+    - name: Wait until HAProxy on every load balancer marks the node UP
       ansible.builtin.uri:
         url: "http://{{ hostvars[item]['ip'] }}:8404/;csv"
         url_username: tera
@@ -289,8 +368,8 @@
       delegate_to: "{{ item }}"
       loop: "{{ groups['loadbalancer'] }}"
       register: _se_stats
-      # CSV column 18 (status) of the row "mariadb,db02,...".
-      until: _se_stats.content | default('') is search('^mariadb,db02,(?:[^,]*,){15}UP,', multiline=True)
+      # CSV column 18 (status) of the row "mariadb,<node>,...".
+      until: _se_stats.content | default('') is search('^mariadb,' ~ inventory_hostname ~ ',(?:[^,]*,){15}UP,', multiline=True)
       retries: 60
       delay: 2
 
