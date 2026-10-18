@@ -246,6 +246,73 @@ gpg --armor --export backup@example.com > inventory/prod-b/config/backup/backup.
 - Tera memasang paket MariaDB **tanpa** paket yang dianjurkan (Recommends/weak dependencies), saat deploy dan
   upgrade. Paket yang sudah terpasang tidak dihapus.
 
+## Monitoring (Prometheus)
+
+Tera memasang exporter; Prometheus dan Grafana tidak. Default mati.
+
+```yaml
+# inventory/prod-b/group_vars/all/tera.yml
+tera_monitoring_enabled: true        # mysqld_exporter di setiap node mariadb (port 9104)
+node_exporter_enabled: true          # opsional: metrik host + metrik backup (port 9100)
+tera_monitoring_sources:             # alamat Prometheus; kosong = exporter hanya di 127.0.0.1
+  - 10.10.20.5
+haproxy_prometheus_enabled: true     # /metrics di port stats HAProxy (8404)
+```
+
+- `mysqld_exporter` berjalan sebagai user OS `tera-exporter` dan login ke MariaDB lewat `unix_socket` sebagai
+  user `tera-exporter` (tanpa password; hak `PROCESS`, `REPLICA MONITOR`, `SELECT` pada `performance_schema`).
+  `node_exporter` berjalan sebagai user lain, `tera-node-exporter`, yang tidak bisa login ke MariaDB.
+- Binary diunduh dari GitHub releases dengan versi dan SHA256 yang di-pin; checksum yang salah menggagalkan run
+  sebelum binary dipasang. **Tanpa internet:** arahkan `mysqld_exporter_url` dan `node_exporter_url` ke mirror
+  internal (nama file rilis yang sama); versi lain butuh `*_sha256` yang sesuai.
+- `/metrics` HAProxy memakai **user dan password stats** (`haproxy_stats_user`, `haproxy_stats_password`):
+  Prometheus harus memakai basic auth. Port stats terbuka untuk `haproxy_stats_sources` ditambah
+  `tera_monitoring_sources`.
+- Mematikan monitoring (`tera_monitoring_enabled: false` lalu `tera reconfigure`) menghapus exporter, user OS,
+  user MariaDB `tera-exporter`, file metrik, dan rule firewall-nya.
+
+Metrik backup (`tera_backup.prom`, dibaca textfile collector `node_exporter` dari
+`/var/lib/tera/node_exporter`) ditulis ulang setiap kali status backup berubah. Node backup selalu punya
+metrik ini sejak deploy pertama, bernilai `0` sampai ada backup; node lain hanya `tera_backup_scheduled 0`.
+
+| Metrik | Arti |
+|---|---|
+| `tera_backup_scheduled` | 1 di node yang menjalankan backup terjadwal |
+| `tera_backup_last_success_timestamp_seconds{type}` | akhir backup sukses terakhir (`full`/`incremental`) |
+| `tera_backup_last_attempt_timestamp_seconds{type}` | akhir percobaan terakhir, sukses atau gagal |
+| `tera_backup_last_attempt_success{type}` | 1 jika percobaan terakhir sukses |
+| `tera_backup_last_success_size_bytes{type}` | ukuran backup sukses terakhir |
+| `tera_backup_target_last_push_timestamp_seconds{target}`, `..._success` | push terakhir ke target backup |
+| `tera_backup_verify_last_timestamp_seconds`, `tera_backup_verify_last_result{result}` | verifikasi level 2 terakhir (`ok`, `failed`, `skipped`, `warning`) |
+
+Umur dihitung di Prometheus dari timestamp. Contoh rule alert (jadwal default: backup setiap hari):
+
+```yaml
+groups:
+  - name: tera-backup
+    rules:
+      - alert: TeraBackupTooOld
+        expr: time() - max by (instance, cluster) (tera_backup_last_success_timestamp_seconds) > 26 * 3600
+        labels: {severity: critical}
+        annotations:
+          summary: "Tidak ada backup sukses dalam 26 jam di {{ $labels.instance }}"
+      - alert: TeraBackupLastAttemptFailed
+        expr: tera_backup_last_attempt_success == 0 and tera_backup_last_attempt_timestamp_seconds > 0
+        labels: {severity: warning}
+      - alert: TeraBackupVerifyFailed
+        expr: tera_backup_verify_last_result{result="failed"} == 1
+        labels: {severity: critical}
+      - alert: TeraBackupPushFailed
+        expr: tera_backup_target_last_push_success == 0 and tera_backup_target_last_push_timestamp_seconds > 0
+        labels: {severity: warning}
+      - alert: TeraBackupMetricsMissing     # node_exporter mati atau file metrik hilang
+        expr: absent(tera_backup_scheduled == 1)
+        for: 1h
+        labels: {severity: warning}
+```
+
+Node yang belum pernah berhasil backup punya timestamp `0`, sehingga `TeraBackupTooOld` langsung menyala.
+
 ## Destroy
 
 ```bash
@@ -294,12 +361,22 @@ mengelola ufw):
 | 3306/tcp (dan VIP) | `mariadb_client_sources` (default semua) |
 | 4567/tcp+udp, 4568/tcp, 4444/tcp | node cluster saja |
 | 9200/tcp (health check) | node load balancer saja |
-| 8404/tcp (stats HAProxy) | `haproxy_stats_sources` (default hanya node load balancer) |
+| 8404/tcp (stats HAProxy) | `haproxy_stats_sources` (default hanya node load balancer); dengan `haproxy_prometheus_enabled` juga `tera_monitoring_sources` |
+| 9104/tcp, 9100/tcp (exporter) | `tera_monitoring_sources` (default kosong: exporter hanya di 127.0.0.1) |
 | VRRP (protokol 112) | node load balancer lain saja |
 
 Tera **memiliki** rule untuk port-port itu: rule buatan tangan untuk port yang sama akan dihapus, dan
 daftar rule yang akan dihapus ditampilkan saat run (juga di `--check --diff`). Atur akses lewat variabel di
 atas, atau set `tera_manage_firewall: false` agar Tera sama sekali tidak menyentuh firewalld.
+
+### Keamanan: `*_sources` hanya ditegakkan lewat firewalld
+
+`mariadb_client_sources`, `haproxy_stats_sources`, dan `tera_monitoring_sources` **hanya** ditegakkan oleh rule
+firewalld milik Tera. Di host tanpa firewalld yang berjalan (Ubuntu default), atau jika `tera_manage_firewall`
+atau `*_firewall_manage` bernilai `false`, **tidak ada satu pun yang ditegakkan**: port terbuka untuk siapa saja
+yang bisa menjangkau alamat itu. Prechecks memberi peringatan per host ("sources tidak ditegakkan") jika
+sumbernya dibatasi di host seperti itu. Batasi sendiri lewat firewall jaringan atau ufw. Pengecualian:
+`tera_monitoring_sources` kosong membuat exporter hanya mendengarkan `127.0.0.1`, tanpa bergantung firewall.
 
 ## Dokumentasi lanjutan
 

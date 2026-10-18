@@ -1,0 +1,65 @@
+---
+# Monitoring exporters in a systemd container (ADR 0016, docs/TESTING.md): standalone with local
+# backups, mysqld_exporter and node_exporter on 127.0.0.1 (no sources). Fast complement to the VM
+# scenario monitoring (Galera, HAProxy, firewalld, SELinux). Same images as standalone-podman
+# (TERA_PODMAN_IMAGE).
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+platforms:
+  - name: db01
+    image: ${TERA_PODMAN_IMAGE:-docker.io/library/ubuntu:22.04}
+    dockerfile: ../standalone-podman/Dockerfile.j2
+    pre_build_image: false
+    command: /sbin/init
+    systemd: always
+    groups:
+      - mariadb
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+    ANSIBLE_FILTER_PLUGINS: ${MOLECULE_PROJECT_DIRECTORY}/plugins/filter
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/collections
+  playbooks:
+    prepare: ../shared/prepare.yml
+    converge: ../shared/converge.yml
+    side_effect: side_effect.yml
+    verify: ../shared/verify.yml
+  inventory:
+    group_vars:
+      all:
+        # See molecule/upgrade-podman/molecule.yml: root in the container, no sudo.
+        ansible_become: false
+        tera_action: deploy
+        tera_config_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/config
+        # Test-only password, generated outside the repo in the ephemeral directory.
+        mariadb_admin_password: >-
+          {{ lookup('ansible.builtin.password',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/admin_password',
+                    chars=['ascii_letters', 'digits'], length=32) }}
+        mariadb_admin_hosts:
+          - localhost
+          - "{{ tera_listen_address }}"
+        mariadb_databases:
+          - name: app
+        mariadb_backup_enabled: true
+        tera_monitoring_enabled: true
+        node_exporter_enabled: true
+    host_groups:
+      loadbalancer: {}
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - destroy
+verifier:
+  name: ansible

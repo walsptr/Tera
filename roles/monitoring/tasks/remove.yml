@@ -1,0 +1,43 @@
+---
+# Remove one exporter (_monitoring_remove, an item of _monitoring_exporters): unit, binary, releases,
+# extra paths and OS user. No-op when it was never installed.
+- name: Check the unit of {{ _monitoring_remove.name }}
+  ansible.builtin.stat:
+    path: /etc/systemd/system/{{ _monitoring_remove.unit }}
+  register: _monitoring_remove_unit
+
+- name: Stop {{ _monitoring_remove.name }}
+  ansible.builtin.systemd_service:
+    name: "{{ _monitoring_remove.unit }}"
+    state: stopped
+    enabled: false
+  when: _monitoring_remove_unit.stat.exists
+
+- name: Remove unit, binary and files of {{ _monitoring_remove.name }}
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ ['/etc/systemd/system/' ~ _monitoring_remove.unit, '/usr/local/bin/' ~ _monitoring_remove.name] + _monitoring_remove.paths }}"
+
+- name: Reload systemd after removing {{ _monitoring_remove.name }}
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: _monitoring_remove_unit.stat.exists
+
+- name: Check the download directory
+  ansible.builtin.stat:
+    path: "{{ monitoring_download_dir }}"
+  register: _monitoring_remove_downloads
+
+- name: Remove releases of {{ _monitoring_remove.name }}
+  ansible.builtin.include_tasks: releases_remove.yml
+  vars:
+    _monitoring_bin:
+      name: "{{ _monitoring_remove.name }}"
+    _monitoring_keep: ""
+  when: _monitoring_remove_downloads.stat.exists
+
+- name: Remove the OS user of {{ _monitoring_remove.name }}
+  ansible.builtin.user:
+    name: "{{ _monitoring_remove.user }}"
+    state: absent

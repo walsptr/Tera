@@ -41,9 +41,20 @@ listen mariadb
 {% endfor %}
 {% endif %}
 
+{% if haproxy_prometheus_enabled | bool %}
+# Prometheus metrics (ADR 0016) on the stats port. use-service bypasses "stats auth", so /metrics
+# checks the same user explicitly.
+userlist tera_stats
+    user {{ haproxy_stats_user }} insecure-password {{ haproxy_stats_password }}
+
+{% endif %}
 listen stats
     bind {{ tera_listen_address }}:{{ haproxy_stats_port }}
     mode http
+{% if haproxy_prometheus_enabled | bool %}
+    http-request auth realm stats if { path /metrics } !{ http_auth(tera_stats) }
+    http-request use-service prometheus-exporter if { path /metrics }
+{% endif %}
     stats enable
     stats uri /
     stats refresh 10s

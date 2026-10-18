@@ -1,0 +1,71 @@
+---
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Check tera_monitoring_sources
+  ansible.builtin.assert:
+    that:
+      - tera_monitoring_sources is sequence
+      - tera_monitoring_sources is not string
+      - _monitoring_bad_sources | length == 0
+    fail_msg: >-
+      tera_monitoring_sources harus list IPv4/CIDR (boleh kosong = exporter hanya mendengarkan 127.0.0.1).
+      Entri tidak valid: {{ _monitoring_bad_sources }}. CIDR tidak boleh punya bit host: tulis "10.0.0.0/24",
+      bukan "10.0.0.5/24".
+    quiet: true
+  vars:
+    _monitoring_bad_sources: >-
+      {{ (tera_monitoring_sources | zip(tera_monitoring_sources | map('tera_is_ipv4_network'))
+          | rejectattr('1') | map(attribute='0') | list)
+         if (tera_monitoring_sources is sequence and tera_monitoring_sources is not string)
+         else [tera_monitoring_sources] }}
+
+- name: Check the exporter releases
+  ansible.builtin.assert:
+    that:
+      - _monitoring_arch | length > 0
+      - (lookup('ansible.builtin.vars', item.name ~ '_sha256')[_monitoring_arch] | default('')) is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      {{ inventory_hostname }}: {{ item.name }} butuh SHA256 untuk arsitektur
+      '{{ _monitoring_arch | default(ansible_facts['architecture'], true) }}' (amd64 atau arm64) di
+      {{ item.name }}_sha256. Isi checksum dari sha256sums.txt rilis {{ item.name }} yang dipakai.
+    quiet: true
+  loop: "{{ _monitoring_exporters | selectattr('enabled') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Check the exporter ports
+  ansible.builtin.assert:
+    that:
+      - _monitoring_ports | map('int') | select('ge', 1) | select('le', 65535) | list | length == _monitoring_ports | length
+      - (_monitoring_ports + [mariadb_port, mariadb_clustercheck_port, haproxy_stats_port]) | map('int') | unique | length
+        == (_monitoring_ports | length) + 3
+    fail_msg: >-
+      Port exporter ({{ _monitoring_ports | join(', ') }}) harus 1-65535 dan berbeda satu sama lain serta dari
+      mariadb_port, mariadb_clustercheck_port, dan haproxy_stats_port. Perbaiki group_vars/all/tera.yml.
+    quiet: true
+  vars:
+    _monitoring_ports: "{{ _monitoring_exporters | selectattr('enabled') | map(attribute='port') | list }}"
+  when: tera_monitoring_enabled | bool
+
+# ADR 0016: every *_sources is only enforced by Tera's firewalld rich rules.
+- name: Collect service facts for the tera_monitoring_sources warning
+  ansible.builtin.service_facts:
+  when:
+    - tera_monitoring_enabled | bool
+    - tera_monitoring_sources | length > 0
+
+- name: Warn when tera_monitoring_sources is not enforced
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: {{ inventory_hostname }}: tera_monitoring_sources membatasi sumber ({{ tera_monitoring_sources | join(', ') }}),
+      tetapi firewalld {{ 'tidak berjalan' if _monitoring_fw_managed | bool else 'tidak dikelola Tera' }} di host ini:
+      sources tidak ditegakkan, port {{ _monitoring_exporters | selectattr('enabled') | map(attribute='port') | join(', ') }}
+      terbuka untuk siapa saja yang bisa menjangkau host ini. Batasi lewat firewall jaringan atau ufw (README, bagian
+      Keamanan), atau jalankan firewalld.
+  when:
+    - tera_monitoring_enabled | bool
+    - tera_monitoring_sources | length > 0
+    - not (_monitoring_fw_managed | bool) or (ansible_facts['services']['firewalld.service']['state'] | default('')) != 'running'
+  vars:
+    _monitoring_fw_managed: "{{ (tera_manage_firewall | bool) and (monitoring_firewall_manage | bool) }}"

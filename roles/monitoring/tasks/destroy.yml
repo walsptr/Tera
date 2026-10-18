@@ -1,0 +1,35 @@
+---
+# tera destroy: exporters, their OS users, the textfile directory (tera_backup.prom), downloads and the
+# exporter firewall rules. The MariaDB user goes with the data (or stays with --keep-data).
+- name: Check destroy was confirmed
+  ansible.builtin.assert:
+    that:
+      - tera_destroy_confirm | default(false) | bool
+    fail_msg: "Destroy menghapus data. Jalankan lewat: ./tera destroy -i inventory/<cluster> --yes-i-really-really-mean-it"
+    quiet: true
+
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Remove exporters
+  ansible.builtin.include_tasks: remove.yml
+  loop: "{{ _monitoring_exporters }}"
+  loop_control:
+    loop_var: _monitoring_remove
+    label: "{{ _monitoring_remove.name }}"
+
+- name: Remove the textfile directory and downloads
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ tera_monitoring_textfile_dir }}"
+    - "{{ monitoring_download_dir }}"
+
+- name: Remove exporter firewall rules
+  ansible.builtin.include_tasks: firewall.yml
+  vars:
+    _monitoring_fw_close_all: true
+  when:
+    - tera_manage_firewall | bool
+    - monitoring_firewall_manage | bool

@@ -1,0 +1,33 @@
+---
+# Monitoring role defaults (ADR 0016). Shared values (tera_monitoring_enabled, tera_monitoring_sources,
+# mysqld_exporter_user, tera_monitoring_textfile_dir) live in roles/tera_defaults.
+
+# Binaries: release tarballs, pinned version and SHA256 per architecture (amd64, arm64). A wrong
+# checksum fails the run before anything is installed. Without internet, point the URLs at an internal
+# mirror (the version and _monitoring_arch, amd64 or arm64, are filled in); a new version needs new
+# checksums.
+mysqld_exporter_version: "0.20.0"
+# yamllint disable-line rule:line-length
+mysqld_exporter_url: https://github.com/prometheus/mysqld_exporter/releases/download/v{{ mysqld_exporter_version }}/mysqld_exporter-{{ mysqld_exporter_version }}.linux-{{ _monitoring_arch }}.tar.gz
+mysqld_exporter_sha256:
+  amd64: 5773496e9962ca3817b3599fe4d74f218c95c1295eb2a742462df8e035fe51bd
+  arm64: 837804c0a59cbe1f3ab46670dec1b4c37940c8d48062374691b27f1f37abf8dd
+mysqld_exporter_port: 9104
+
+# node_exporter is optional; it also serves tera_backup.prom (textfile collector).
+node_exporter_enabled: false
+node_exporter_version: "1.12.1"
+# yamllint disable-line rule:line-length
+node_exporter_url: https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-{{ _monitoring_arch }}.tar.gz
+node_exporter_sha256:
+  amd64: b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63
+  arm64: ad35b605f9954b9f1ffddf5ba054bdc5a98d790b9eae5291e1eeb83f1ecbd0e7
+node_exporter_port: 9100
+# Own OS user: unlike tera-exporter, it maps to no MariaDB user and cannot log in to MariaDB.
+node_exporter_user: tera-node-exporter
+
+# Downloaded tarballs and unpacked releases on the node.
+monitoring_download_dir: /var/cache/tera/exporters
+# Turn off firewalld management for the exporter ports only. Ignored (never managed) when
+# tera_manage_firewall is false.
+monitoring_firewall_manage: true

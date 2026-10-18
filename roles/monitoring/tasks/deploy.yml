@@ -1,0 +1,59 @@
+---
+# Monitoring exporters (ADR 0016). Off (default): everything Tera installed for it is removed again.
+- name: Run prechecks
+  ansible.builtin.import_tasks: prechecks.yml
+
+# The textfile directory exists whenever monitoring is on, also without node_exporter, so another
+# exporter can read tera_backup.prom.
+- name: Create the textfile directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ tera_monitoring_textfile_dir | dirname }}"
+    - "{{ tera_monitoring_textfile_dir }}"
+  when: tera_monitoring_enabled | bool
+
+- name: Install mysqld_exporter
+  ansible.builtin.include_tasks: mysqld_exporter.yml
+  when: tera_monitoring_enabled | bool
+
+- name: Install node_exporter
+  ansible.builtin.include_tasks: node_exporter.yml
+  when:
+    - tera_monitoring_enabled | bool
+    - node_exporter_enabled | bool
+
+- name: Remove exporters that are off
+  ansible.builtin.include_tasks: remove.yml
+  loop: "{{ _monitoring_exporters | rejectattr('enabled') | list }}"
+  loop_control:
+    loop_var: _monitoring_remove
+    label: "{{ _monitoring_remove.name }}"
+
+- name: Remove the textfile directory and downloads
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ tera_monitoring_textfile_dir }}"
+    - "{{ monitoring_download_dir }}"
+  when: not (tera_monitoring_enabled | bool)
+
+- name: Manage exporter firewall rules
+  ansible.builtin.include_tasks: firewall.yml
+  when:
+    - tera_manage_firewall | bool
+    - monitoring_firewall_manage | bool
+
+# tera-backup (installed on every mariadb node by mariadb_backup) refreshes the file on every status
+# change; this writes it once, so the backup metrics exist from the first deploy.
+- name: Write the backup metrics
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/tera-backup metrics
+  register: _monitoring_backup_metrics
+  changed_when: "'metrics changed' in _monitoring_backup_metrics.stdout"
+  when: tera_monitoring_enabled | bool

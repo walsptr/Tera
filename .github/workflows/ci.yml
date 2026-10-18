@@ -88,3 +88,7 @@ jobs:
         env:
           TERA_PODMAN_IMAGE: ${{ matrix.image }}
         run: molecule test -s upgrade-podman
+      - name: molecule test -s monitoring-podman
+        env:
+          TERA_PODMAN_IMAGE: ${{ matrix.image }}
+        run: molecule test -s monitoring-podman

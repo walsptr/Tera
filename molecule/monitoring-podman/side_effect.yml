@@ -1,0 +1,196 @@
+---
+# Standalone monitoring side effects (ADR 0016):
+# 1. exporters on 127.0.0.1 only (no sources); mysql_up 1; backup metrics exist with 0 before any backup;
+#    exporter users, grants and textfile access (shared/tasks/monitoring_node.yml);
+# 2. after a full backup (and its level-2 verification) node_exporter serves the new timestamps;
+# 3. a wrong checksum for another node_exporter version is refused, the installed one keeps running;
+# 4. deploy afterwards is changed=0;
+# 5. monitoring off removes exporters, users, files and the MariaDB user; a second run is changed=0.
+- name: Check the exporters before any backup
+  hosts: db01
+  gather_facts: false
+  tasks:
+    - name: Read the exporter listeners
+      ansible.builtin.command:
+        cmd: ss -ltnH
+      register: _se_listen
+      changed_when: false
+
+    - name: Read mysqld_exporter metrics
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9104/metrics
+        return_content: true
+      register: _se_mysqld
+      until: _se_mysqld.content | default('') is search('^mysql_up 1$', multiline=True)
+      retries: 15
+      delay: 2
+
+    - name: Read node_exporter metrics
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        return_content: true
+      register: _se_node
+
+    - name: Assert local-only exporters and zero backup metrics
+      ansible.builtin.assert:
+        that:
+          - _se_listen.stdout is search('127\.0\.0\.1:9104\s')
+          - _se_listen.stdout is search('127\.0\.0\.1:9100\s')
+          - _se_listen.stdout is not search('(0\.0\.0\.0|\*|\[::\]):(9104|9100)\s')
+          - _se_node.content is search('^tera_backup_scheduled\{cluster="[^"]+"\} 1$', multiline=True)
+          - _se_node.content is search('^tera_backup_last_success_timestamp_seconds\{cluster="[^"]+",type="full"\} 0$', multiline=True)
+          - _se_node.content is search('^tera_backup_last_attempt_timestamp_seconds\{cluster="[^"]+",type="incremental"\} 0$', multiline=True)
+          - _se_node.content is search('^node_textfile_scrape_error 0$', multiline=True)
+        fail_msg: "{{ _se_listen.stdout_lines | to_json }}"
+
+    - name: Check exporter users and files
+      ansible.builtin.include_tasks: ../shared/tasks/monitoring_node.yml
+
+- name: Take a full backup
+  hosts: db01
+  gather_facts: false
+  tasks:
+    - name: Run a full backup
+      ansible.builtin.include_tasks: ../backup/tasks/backup_run.yml
+      vars:
+        _se_type: full
+
+    - name: Wait for the level-2 verification and its metrics
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        return_content: true
+      register: _se_node_after
+      until: _se_node_after.content | default('') is search('^tera_backup_verify_last_result\{cluster="[^"]+",result="ok"\} 1$', multiline=True)
+      retries: 60
+      delay: 5
+
+    - name: Assert the backup metrics follow the status file
+      ansible.builtin.assert:
+        that:
+          - (_se_node_after.content | regex_findall(_ts_full, multiline=True) | first | float) > 0
+          - _se_node_after.content is search('^tera_backup_last_attempt_success\{cluster="[^"]+",type="full"\} 1$', multiline=True)
+          - (_se_node_after.content | regex_findall(_ts_verify, multiline=True) | first | float) > 0
+      vars:
+        _ts_full: '^tera_backup_last_success_timestamp_seconds\{cluster="[^"]+",type="full"\} (\S+)$'
+        _ts_verify: '^tera_backup_verify_last_timestamp_seconds\{cluster="[^"]+"\} (\S+)$'
+
+- name: Wrong checksum and idempotence
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure with another node_exporter version and a wrong checksum
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args:
+            - -e
+            - '{"node_exporter_version": "1.12.0", "node_exporter_sha256": {"amd64": "{{ "0" * 64 }}", "arm64": "{{ "0" * 64 }}"}}'
+          expect: checksum tidak cocok
+
+    - name: Run deploy after the backup
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+    - name: Assert deploy changed nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks | to_json }}"
+
+- name: Check the installed node_exporter after the refused checksum
+  hosts: db01
+  gather_facts: false
+  tasks:
+    - name: Read the node_exporter version
+      ansible.builtin.command:
+        cmd: /usr/local/bin/node_exporter --version
+      register: _se_node_version
+      changed_when: false
+
+    - name: Look for the refused release
+      ansible.builtin.find:
+        paths: /var/cache/tera/exporters
+        patterns: node_exporter-1.12.0*
+        file_type: any
+      register: _se_refused
+
+    - name: Assert the installed node_exporter is unchanged and nothing of 1.12.0 landed
+      ansible.builtin.assert:
+        that:
+          - (_se_node_version.stdout ~ _se_node_version.stderr) is search('version 1\.12\.1')
+          - _se_refused.matched == 0
+
+- name: Monitoring off
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure with monitoring off
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, '{"tera_monitoring_enabled": false}']
+          expect_success: true
+
+    - name: Run reconfigure with monitoring off again
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, '{"tera_monitoring_enabled": false}']
+          expect_success: true
+
+    - name: Assert the second run changed nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks | to_json }}"
+
+- name: Check nothing of monitoring is left
+  hosts: db01
+  gather_facts: false
+  tasks:
+    - name: Look for monitoring files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/systemd/system/tera-mysqld-exporter.service
+        - /etc/systemd/system/tera-node-exporter.service
+        - /usr/local/bin/mysqld_exporter
+        - /usr/local/bin/node_exporter
+        - /etc/tera-exporter
+        - /var/lib/tera/node_exporter
+        - /var/cache/tera/exporters
+      register: _se_left
+
+    - name: Look for the OS users
+      ansible.builtin.command:
+        cmd: getent passwd tera-exporter tera-node-exporter
+      register: _se_users
+      changed_when: false
+      failed_when: false
+
+    - name: Look for the MariaDB user
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT COUNT(*) FROM mysql.user WHERE user = 'tera-exporter'"
+      register: _se_db_user
+      changed_when: false
+
+    - name: Read the tera-backup config
+      ansible.builtin.slurp:
+        src: /etc/tera/backup/config.json
+      register: _se_backup_cfg
+
+    - name: Assert monitoring is gone
+      ansible.builtin.assert:
+        that:
+          - _se_left.results | selectattr('stat.exists') | list | length == 0
+          - _se_users.stdout == ''
+          - _se_db_user.stdout == '0'
+          - (_se_backup_cfg.content | b64decode | from_json).metrics_path is none
+        fail_msg: "left={{ _se_left.results | selectattr('stat.exists') | map(attribute='item') | list }} users={{ _se_users.stdout }}"

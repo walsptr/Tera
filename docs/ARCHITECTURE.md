@@ -13,7 +13,7 @@
 tera                                  # CLI bash
 ansible.cfg  requirements.yml  requirements-dev.txt  site.yml  .gitignore
 .ansible-lint  .yamllint  pyproject.toml  .github/workflows/ci.yml
-playbooks/{facts,common,mariadb,loadbalancer,backup,mariadb-recover,mariadb-backup,mariadb-restore,destroy}.yml
+playbooks/{facts,common,mariadb,loadbalancer,backup,monitoring,mariadb-recover,mariadb-backup,mariadb-restore,mariadb-upgrade,destroy}.yml
 playbooks/tasks/listen_address.yml     # tera_listen_address, dipakai facts.yml dan mariadb-restore.yml
 plugins/filter/{merge_ini,tera_ip}.py   plugins/tests/test_{merge_ini,tera_ip,tera_backup}.py   # tests outside filter/: Ansible loads filter subdirs as plugins
 roles/tera_defaults/defaults/main.yml
@@ -27,9 +27,12 @@ roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.
 roles/mariadb_backup/{defaults,vars,templates,files/{tera_backup.py,backup-target-rsync}}   # ADR 0012
   tasks entry point: prechecks deploy reconfigure destroy keys op_{run,verify,status}
 roles/backup_target/{defaults,vars,templates,files/tera_backup_target.py,tasks/{prechecks,deploy,reconfigure,destroy}.yml}
+roles/monitoring/{defaults,vars/{main,Debian,RedHat}.yml,templates}   # ADR 0016
+  tasks entry point: prechecks deploy reconfigure destroy
+  tasks internal:    vars mysqld_exporter node_exporter binary releases_remove remove firewall
 inventory/sample/{hosts.yml,group_vars/all/{tera.yml,passwords.yml},config/{mariadb,haproxy/conf.d,keepalived}}
 docs/
-molecule/{shared,standalone,standalone-podman,galera,reconfigure,recover,recover-poweroff,loadbalancer,destroy,backup,backup-galera}/   # shared = playbook dan task bersama
+molecule/{shared,standalone,standalone-podman,galera,reconfigure,recover,recover-poweroff,loadbalancer,destroy,backup,backup-galera,upgrade,upgrade-podman,monitoring,monitoring-podman}/   # shared = playbook dan task bersama
 ```
 
 ## Inventory cluster
@@ -103,6 +106,7 @@ Perilaku CLI:
 | 7 | Backup keys | `mariadb` | kunci SSH node backup (hanya jika ada target remote) |
 | 8 | Backup target | `mariadb_backup_target` | user, direktori, `authorized_keys` tulis-saja, timer retensi; publikasi host key |
 | 9 | MariaDB backup | `mariadb` | alat, script, config, `known_hosts`, timer di `mariadb_backup_host`; peringatan jika backup mati |
+| 10 | Monitoring | `mariadb` | exporter, user OS, rule firewall, `tera_backup.prom`; jika monitoring mati: semua itu dihapus (ADR 0016) |
 
 Setiap play memuat role `tera_defaults` dan memakai `any_errors_fatal: true`.
 
@@ -132,6 +136,7 @@ perubahan repo tanpa menulisnya.
 | loadbalancer | VIP, VRID, password | prechecks, install, config, start | prechecks, config + reload |
 | mariadb_backup | node backup, writer, target, public key | prechecks, alat, script, config, timer | sama dengan deploy |
 | backup_target | OS, direktori | prechecks, paket, user, kunci node, timer | sama dengan deploy |
+| monitoring | sumber, checksum per arsitektur, port | prechecks, exporter (unduh + checksum), unit, firewall, metrik backup; atau hapus semuanya | sama dengan deploy |
 
 ## Nilai lintas host
 
@@ -227,6 +232,21 @@ Variabel role `mariadb_backup` (`roles/mariadb_backup/defaults/main.yml`, ADR 00
 | `mariadb_backup_allow_writer` | `false` |
 | `mariadb_backup_source_address` | (opsional, host var) alamat node yang dilihat host backup untuk `from=`; default `tera_listen_address` |
 
+Variabel monitoring (ADR 0016; `tera_monitoring_enabled`, `tera_monitoring_sources`, `mysqld_exporter_user`,
+`tera_monitoring_textfile_dir` di `tera_defaults`, sisanya di `roles/monitoring/defaults/main.yml`,
+`haproxy_prometheus_enabled` di role `loadbalancer`):
+
+| Variabel | Default |
+|---|---|
+| `tera_monitoring_enabled` / `node_exporter_enabled` | `false` / `false` |
+| `tera_monitoring_sources` | `[]` (exporter hanya di `127.0.0.1`; diisi = `tera_listen_address` + rich rule per sumber) |
+| `mysqld_exporter_version` / `_url` / `_sha256` / `_port` | `0.20.0` / GitHub releases / per arsitektur (`amd64`, `arm64`) / `9104` |
+| `node_exporter_version` / `_url` / `_sha256` / `_port` | `1.12.1` / GitHub releases / per arsitektur / `9100` |
+| `mysqld_exporter_user` / `node_exporter_user` | `tera-exporter` / `tera-node-exporter` |
+| `tera_monitoring_textfile_dir` | `/var/lib/tera/node_exporter` |
+| `monitoring_download_dir` / `monitoring_firewall_manage` | `/var/cache/tera/exporters` / `true` |
+| `haproxy_prometheus_enabled` | `false` (`/metrics` di port stats, user stats) |
+
 Variabel `tera restore` (ADR 0013, lewat `-e`): `mariadb_restore_backup` (`latest` atau `<chain_id>/<sequence>`),
 `mariadb_restore_host` (default: standalone = satu-satunya node, galera = `mariadb_bootstrap_host`),
 `mariadb_restore_source` (`local` atau nama target), `mariadb_restore_source_host` (node yang backup-nya
@@ -277,7 +297,8 @@ dipulihkan; default `mariadb_backup_host`), `mariadb_restore_gpg_private_key` (f
 | 4568/tcp | IST |
 | 4444/tcp | SST |
 | 9200/tcp | tera-clustercheck |
-| 8404/tcp | HAProxy stats (dari `haproxy_stats_sources`) |
+| 8404/tcp | HAProxy stats dan `/metrics` (dari `haproxy_stats_sources`, plus `tera_monitoring_sources` jika `haproxy_prometheus_enabled`) |
+| 9104/tcp, 9100/tcp | `mysqld_exporter`, `node_exporter` (dari `tera_monitoring_sources`; kosong = hanya `127.0.0.1`) |
 | protokol 112 | VRRP (hanya dari node load balancer lain) |
 
 SELinux (RHEL, mode galera, SELinux enabled): Tera memasang label `mysqld_port_t` untuk 4568/tcp (IST, tidak
@@ -295,6 +316,10 @@ default:
 | `mariadb_port` (3306/tcp) | `mariadb_client_sources` (default `0.0.0.0/0` = port dibuka untuk zona; selain itu rich rule per sumber) |
 | `mariadb_clustercheck_port` (9200/tcp, galera) | hanya alamat node group `loadbalancer` (group kosong = tertutup) |
 | 4567/tcp+udp, 4568/tcp, 4444/tcp (galera) | hanya alamat node cluster |
+| `mysqld_exporter_port`, `node_exporter_port` (monitoring) | `tera_monitoring_sources` (role `monitoring`, `monitoring_firewall_manage`) |
+
+Semua `*_sources` hanya ditegakkan lewat rich rule ini. Di host tanpa firewalld yang berjalan atau yang
+firewalld-nya tidak dikelola, prechecks memberi peringatan per host jika sumbernya dibatasi (ADR 0016).
 
 Tera memiliki rich rule untuk port-port itu di zona default dan menyamakannya setiap deploy/reconfigure: rule
 dengan sumber yang tidak lagi diharapkan dihapus, termasuk rule buatan tangan untuk port yang sama. Sebelum
@@ -326,7 +351,8 @@ di deploy, reconfigure, dan destroy, untuk role `mariadb` maupun `loadbalancer`.
 | Keepalived | `/etc/keepalived/keepalived.conf` (`0640 root:root`, berisi `auth_pass`) |
 | Sysctl load balancer | `/etc/sysctl.d/90-tera-loadbalancer.conf` (`net.ipv4.ip_nonlocal_bind = 1`) |
 | Backup (semua node MariaDB) | `/usr/local/sbin/tera-backup`, `/usr/local/lib/tera/backup-targets/rsync`, `/etc/tera/backup/config.json` (`0600 root`); `mariadb_backup_dir`, `.incoming/`, `.restore/`, `.verify/` `0711 root` (bisa dilewati, tidak bisa didaftar; isi rantai `0700 root`; induk default `/var/backups/tera` `0711`); user `tera-restore` (password terkunci, home `/var/lib/tera-restore`, `authorized_keys` hanya berisi entri sementara selama restore) |
-| Backup (node backup) | unit `tera-backup@.service`, `tera-backup-{full,incremental}.timer`, `tera-backup-verify.service`; kunci SSH `/etc/tera/backup/id_ed25519`, `known_hosts`, keyring public key `/etc/tera/backup/gnupg`, status `/etc/tera/mariadb-backup.status` (JSON, kontrak untuk exporter Fase 4b) |
+| Backup (node backup) | unit `tera-backup@.service`, `tera-backup-{full,incremental}.timer`, `tera-backup-verify.service`; kunci SSH `/etc/tera/backup/id_ed25519`, `known_hosts`, keyring public key `/etc/tera/backup/gnupg`, status `/etc/tera/mariadb-backup.status` (JSON, sumber metrik `tera_backup_*`, ADR 0016) |
+| Monitoring (semua node MariaDB, ADR 0016) | `/usr/local/bin/{mysqld,node}_exporter`, unit `tera-mysqld-exporter.service` dan `tera-node-exporter.service`, user OS `tera-exporter` dan `tera-node-exporter` (sistem, tanpa shell, tanpa home), `/etc/tera-exporter/my.cnf` (`0640 root:tera-exporter`, hanya `user` dan `socket`), user MariaDB `'tera-exporter'@'localhost'` (`unix_socket`), `/var/lib/tera/node_exporter/tera_backup.prom` (`0644`, ditulis `tera-backup metrics` dan setiap perubahan status), unduhan di `/var/cache/tera/exporters` |
 | Host backup | user `tera-backup`, `mariadb_backup_target_dir/<cluster>/<node>/`, state verifikasi `/var/lib/tera-backup-target/state/` (di luar jangkauan node), `/etc/tera/backup-target/<cluster>.json`, `tera-backup-target.{service,timer}` |
 
 Semua file yang dirender Tera diberi header "Managed by Tera".
@@ -351,7 +377,9 @@ meninggalkan file kosong atau terpotong. Restart pending marker di-`sync` sebelu
    deploy berikutnya gagal dengan arahan ke `tera recover`, yang memilih node dari `grastate.dat` (ADR 0006).
    Di mode standalone deploy berikutnya langsung memakai datadir lama.
 
-6. Backup: timer, unit, script, dan `/etc/tera/backup` dihapus. Isi `mariadb_backup_dir` di node dan backup di
+6. Monitoring: exporter, unit, user OS, `/etc/tera-exporter`, direktori textfile, unduhan, dan rule firewalld
+   exporter dihapus. User MariaDB `tera-exporter` ikut datadir (tetap ada dengan `--keep-data`).
+7. Backup: timer, unit, script, dan `/etc/tera/backup` dihapus. Isi `mariadb_backup_dir` di node dan backup di
    host backup **tidak pernah dihapus** (juga tanpa `--keep-data`); ringkasan menyebut lokasinya.
 
 Paket, repo MariaDB, dan boolean SELinux `haproxy_connect_any` tidak disentuh.

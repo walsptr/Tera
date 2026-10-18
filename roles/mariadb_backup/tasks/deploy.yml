@@ -224,6 +224,9 @@
       targets: "{{ _mariadb_backup_targets_rendered | default([]) }}"
       verify_after_full: "{{ mariadb_backup_verify_after_full | bool }}"
       verify_unit: tera-backup-verify.service
+      # ADR 0016: every status update also refreshes the textfile metrics.
+      scheduled: "{{ _mariadb_backup_active | bool }}"
+      metrics_path: "{{ (tera_monitoring_textfile_dir ~ '/tera_backup.prom') if (tera_monitoring_enabled | bool) else none }}"
 
 - name: Install systemd units
   ansible.builtin.template:

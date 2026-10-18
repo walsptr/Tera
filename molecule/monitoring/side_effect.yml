@@ -1,0 +1,300 @@
+---
+# Monitoring side effects (docs/TESTING.md, ADR 0016). The host (10.77.0.1) is the only monitoring source.
+# 1. from the host: mysql_up 1 and wsrep_cluster_size 3 on every node, node_exporter with the backup
+#    metrics (scheduled only on db03, all 0 before the first backup), HAProxy /metrics 401 without and 200
+#    with the stats user; on the nodes: exporters on tera_listen_address, exporter users, grants and
+#    textfile access; Rocky: rich rules for the host, no SELinux denial for the exporters;
+# 2. a full backup on db03 shows up in its node_exporter metrics;
+# 3. sources without the host: Rocky refuses the host (exporters and stats port) and prints no warning;
+#    Ubuntu (no firewalld) still answers and prechecks warn that the sources are not enforced;
+# 4. empty sources: exporters on 127.0.0.1 only, no exporter rich rule left (Rocky), a second run is
+#    changed=0;
+# 5. a wrong checksum for another mysqld_exporter version is refused;
+# 6. deploy restores the sources, the host scrapes again, a second deploy is changed=0.
+- name: Read the OS of the nodes
+  hosts: mariadb
+  gather_facts: true
+  tasks:
+    - name: Remember the OS family
+      ansible.builtin.set_fact:
+        _se_os: "{{ ansible_facts['os_family'] }}"
+
+- name: Scrape from the host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read mysqld_exporter metrics of every node
+      ansible.builtin.uri:
+        url: http://{{ hostvars[item]['ip'] }}:9104/metrics
+        return_content: true
+      loop: "{{ groups['mariadb'] }}"
+      register: _se_mysqld
+      until: _se_mysqld.content | default('') is search('^mysql_up 1$', multiline=True)
+      retries: 15
+      delay: 2
+
+    - name: Read node_exporter metrics of every node
+      ansible.builtin.uri:
+        url: http://{{ hostvars[item]['ip'] }}:9100/metrics
+        return_content: true
+      loop: "{{ groups['mariadb'] }}"
+      register: _se_node
+
+    - name: Read HAProxy /metrics without credentials
+      ansible.builtin.uri:
+        url: http://{{ hostvars[item]['ip'] }}:8404/metrics
+        status_code: 401
+      loop: "{{ groups['loadbalancer'] }}"
+
+    - name: Read HAProxy /metrics with the stats user
+      ansible.builtin.uri:
+        url: http://{{ hostvars[item]['ip'] }}:8404/metrics
+        url_username: tera
+        url_password: "{{ hostvars[item]['haproxy_stats_password'] }}"
+        force_basic_auth: true
+        return_content: true
+      loop: "{{ groups['loadbalancer'] }}"
+      register: _se_haproxy
+
+    - name: Assert the metrics seen from the host
+      ansible.builtin.assert:
+        that:
+          - _se_mysqld.results | map(attribute='content') | select('search', _size3, multiline=True) | list | length == 3
+          - _se_node.results | map(attribute='content') | select('search', '^node_load1 ', multiline=True) | list | length == 3
+          - _se_node.results[2].content is search(_scheduled ~ ' 1$', multiline=True)
+          - _se_node.results[2].content is search(_full_ts ~ ' 0$', multiline=True)
+          - _se_node.results[0].content is search(_scheduled ~ ' 0$', multiline=True)
+          - _se_node.results[0].content is not search('tera_backup_last_success_timestamp_seconds')
+          - _se_haproxy.results | map(attribute='content') | select('search', '^haproxy_process_', multiline=True) | list | length == 3
+      vars:
+        _size3: '^mysql_global_status_wsrep_cluster_size 3$'
+        _scheduled: '^tera_backup_scheduled\{cluster="[^"]+"\}'
+        _full_ts: '^tera_backup_last_success_timestamp_seconds\{cluster="[^"]+",type="full"\}'
+
+- name: Check the nodes
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the exporter listeners
+      ansible.builtin.command:
+        cmd: ss -ltnH
+      register: _se_listen
+      changed_when: false
+
+    - name: Assert the exporters listen on the node address
+      ansible.builtin.assert:
+        that:
+          - _se_listen.stdout is search(ip | regex_escape ~ ':9104\s')
+          - _se_listen.stdout is search(ip | regex_escape ~ ':9100\s')
+
+    - name: Check exporter users and files
+      ansible.builtin.include_tasks: ../shared/tasks/monitoring_node.yml
+
+    - name: Read firewalld rich rules (Rocky)
+      ansible.builtin.command:
+        cmd: firewall-cmd --list-rich-rules
+      register: _se_rich
+      changed_when: false
+      when: _se_os == 'RedHat'
+
+    - name: Assert the exporter and stats rules for the host (Rocky)
+      ansible.builtin.assert:
+        that:
+          - _se_rich.stdout is search('source address="10.77.0.1" port port="9104" protocol="tcp" accept')
+          - _se_rich.stdout is search('source address="10.77.0.1" port port="9100" protocol="tcp" accept')
+          - _se_rich.stdout is search('source address="10.77.0.1" port port="8404" protocol="tcp" accept')
+        fail_msg: "{{ _se_rich.stdout_lines | to_json }}"
+      when: _se_os == 'RedHat'
+
+    - name: Read SELinux denials (Rocky)
+      ansible.builtin.command:
+        cmd: ausearch --message AVC --start boot
+      register: _se_avc
+      changed_when: false
+      failed_when: _se_avc.rc not in [0, 1]
+      when: _se_os == 'RedHat'
+
+    - name: Assert no SELinux denial for the exporters (Rocky)
+      ansible.builtin.assert:
+        that:
+          - _se_avc.stdout_lines | select('search', 'exporter') | list | length == 0
+        fail_msg: "{{ _se_avc.stdout_lines | select('search', 'exporter') | list | to_json }}"
+      when: _se_os == 'RedHat'
+
+- name: Take a full backup on db03
+  hosts: db03
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run a full backup
+      ansible.builtin.include_tasks: ../backup/tasks/backup_run.yml
+      vars:
+        _se_type: full
+
+- name: Check the backup metrics from the host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read node_exporter metrics of db03
+      ansible.builtin.uri:
+        url: http://{{ hostvars['db03']['ip'] }}:9100/metrics
+        return_content: true
+      register: _se_db03
+
+    - name: Assert the full backup is in the metrics
+      ansible.builtin.assert:
+        that:
+          - (_se_db03.content | regex_findall(_full_ts, multiline=True) | first | float) > 0
+          - _se_db03.content is search('^tera_backup_last_attempt_success\{cluster="[^"]+",type="full"\} 1$', multiline=True)
+      vars:
+        _full_ts: '^tera_backup_last_success_timestamp_seconds\{cluster="[^"]+",type="full"\} (\S+)$'
+
+- name: Sources without the host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_rocky: "{{ hostvars['db01']['_se_os'] == 'RedHat' }}"
+  tasks:
+    - name: Run reconfigure with a source that is not the host
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, '{"tera_monitoring_sources": ["10.77.0.250"]}']
+          expect_success: true
+
+    - name: Assert the warning only where firewalld does not enforce the sources
+      ansible.builtin.assert:
+        that:
+          - (_se_out | regex_findall('tera_monitoring_sources membatasi sumber') | length) == (0 if _se_rocky else 3)
+          - _se_rocky or _se_out is search('sources tidak ditegakkan')
+      vars:
+        _se_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+
+    - name: Scrape db01 from the host
+      ansible.builtin.uri:
+        url: http://{{ hostvars['db01']['ip'] }}:{{ item }}/metrics
+        timeout: 10
+        status_code: [200, 401]
+      loop: [9104, 9100, 8404]
+      register: _se_refused
+      failed_when: false
+
+    # A first Ubuntu run failed here once without details (2026-10-18): always show what the host saw.
+    - name: Show what the host saw
+      ansible.builtin.debug:
+        msg: "{{ _se_refused.results | map(attribute='status') | list | to_json }} {{ _se_refused.results | map(attribute='msg', default='') | list | to_json }}"
+
+    - name: Assert Rocky refuses the host and Ubuntu does not
+      ansible.builtin.assert:
+        that:
+          - _se_refused.results | selectattr('status', 'in', [200, 401]) | list | length == (0 if _se_rocky else 3)
+        fail_msg: "{{ _se_refused.results | map(attribute='status') | list | to_json }} {{ _se_refused.results | map(attribute='msg', default='') | list | to_json }}"
+
+- name: Empty sources
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure with no sources
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, '{"tera_monitoring_sources": []}']
+          expect_success: true
+
+    - name: Run reconfigure with no sources again
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, '{"tera_monitoring_sources": []}']
+          expect_success: true
+
+    - name: Assert the second run changed nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks | to_json }}"
+
+- name: Check exporters are local only
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the exporter listeners
+      ansible.builtin.command:
+        cmd: ss -ltnH
+      register: _se_listen_local
+      changed_when: false
+
+    - name: Read firewalld rich rules (Rocky)
+      ansible.builtin.command:
+        cmd: firewall-cmd --list-rich-rules
+      register: _se_rich_local
+      changed_when: false
+      when: _se_os == 'RedHat'
+
+    - name: Read mysqld_exporter metrics on the node
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9104/metrics
+        return_content: true
+      register: _se_local_metrics
+
+    - name: Assert exporters are on 127.0.0.1 only and no exporter rule is left
+      ansible.builtin.assert:
+        that:
+          - _se_listen_local.stdout is search('127\.0\.0\.1:9104\s')
+          - _se_listen_local.stdout is search('127\.0\.0\.1:9100\s')
+          - _se_listen_local.stdout is not search(ip | regex_escape ~ ':(9104|9100)\s')
+          - _se_local_metrics.content is search('^mysql_up 1$', multiline=True)
+          - _se_os != 'RedHat' or _se_rich_local.stdout is not search('port port="(9104|9100)"')
+        fail_msg: "{{ _se_listen_local.stdout_lines }} {{ _se_rich_local.stdout_lines | default([]) }}"
+
+- name: Wrong checksum, restore and idempotence
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure with another mysqld_exporter version and a wrong checksum
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args:
+            - -e
+            - '{"mysqld_exporter_version": "0.19.0", "mysqld_exporter_sha256": {"amd64": "{{ "0" * 64 }}", "arm64": "{{ "0" * 64 }}"}}'
+          expect: checksum tidak cocok
+
+    - name: Run deploy with the inventory sources
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+    - name: Run deploy again
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          expect_success: true
+
+    - name: Assert the second deploy changed nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks | to_json }}"
+
+    - name: Scrape every node from the host again
+      ansible.builtin.uri:
+        url: http://{{ hostvars[item]['ip'] }}:9104/metrics
+        return_content: true
+      loop: "{{ groups['mariadb'] }}"
+      register: _se_again
+      until: _se_again.content | default('') is search('^mysql_up 1$', multiline=True)
+      retries: 15
+      delay: 2

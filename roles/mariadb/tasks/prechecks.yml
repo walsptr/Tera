@@ -84,6 +84,24 @@
          if (mariadb_client_sources is sequence and mariadb_client_sources is not string)
          else [mariadb_client_sources] }}
 
+# ADR 0016: every *_sources is only enforced by Tera's firewalld rich rules.
+- name: Collect service facts for the mariadb_client_sources warning
+  ansible.builtin.service_facts:
+  when: "'0.0.0.0/0' not in mariadb_client_sources"
+
+- name: Warn when mariadb_client_sources is not enforced
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: {{ inventory_hostname }}: mariadb_client_sources membatasi sumber ({{ mariadb_client_sources | join(', ') }}),
+      tetapi firewalld {{ 'tidak berjalan' if _mariadb_fw_managed | bool else 'tidak dikelola Tera' }} di host ini:
+      sources tidak ditegakkan, port {{ mariadb_port }} terbuka untuk siapa saja yang bisa menjangkau host ini.
+      Batasi lewat firewall jaringan atau ufw (README, bagian Keamanan), atau jalankan firewalld.
+  when:
+    - "'0.0.0.0/0' not in mariadb_client_sources"
+    - not (_mariadb_fw_managed | bool) or (ansible_facts['services']['firewalld.service']['state'] | default('')) != 'running'
+  vars:
+    _mariadb_fw_managed: "{{ (tera_manage_firewall | bool) and (mariadb_firewall_manage | bool) }}"
+
 - name: Check ufw status
   ansible.builtin.command:
     cmd: ufw status

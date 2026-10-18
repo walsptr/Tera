@@ -43,6 +43,17 @@ mariadb_cluster_mode: standalone # standalone | galera
 #   - 10.10.10.0/24
 # mariadb_selinux_permissive: false   # RHEL: Tera labels ports and loads a minimal policy instead
 
+# --- Monitoring (ADR 0016, README "Monitoring") ------------------------------
+# Off by default. mysqld_exporter on every mariadb node; node_exporter optional (also backup metrics).
+# tera_monitoring_enabled: true
+# node_exporter_enabled: true
+# tera_monitoring_sources:                  # Prometheus; empty = exporters on 127.0.0.1 only
+#   - 10.10.20.5
+# haproxy_prometheus_enabled: true          # /metrics on the stats port, stats user and password
+# mysqld_exporter_url: "https://mirror.example/mysqld_exporter-{{ mysqld_exporter_version }}.linux-amd64.tar.gz"   # offline mirror
+# mysqld_exporter_port: 9104
+# node_exporter_port: 9100
+
 # --- Backup (ADR 0012, README "Backup") ---------------------------------------
 # Off by default: every deploy/reconfigure warns until backups are enabled.
 # mariadb_backup_enabled: true

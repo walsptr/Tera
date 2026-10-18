@@ -38,6 +38,19 @@
         name: backup_target
         tasks_from: destroy.yml
 
+- name: Destroy monitoring
+  hosts: mariadb
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run monitoring destroy
+      ansible.builtin.include_role:
+        name: monitoring
+        tasks_from: destroy.yml
+
 - name: Destroy mariadb backups (timers and scripts; backups stay)
   hosts: mariadb
   become: true

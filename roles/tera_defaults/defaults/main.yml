@@ -105,3 +105,17 @@ mariadb_restore_key_ttl: 7200
 # Backup host (role backup_target): directory and the user the nodes write as (rrsync -wo -no-del).
 mariadb_backup_target_dir: /srv/tera-backup
 mariadb_backup_target_user: tera-backup
+
+# --- Monitoring (ADR 0016) --------------------------------------------------
+# Shared by the monitoring, mariadb (exporter user), mariadb_backup (metrics file) and loadbalancer
+# (firewall) roles; the other settings are in roles/monitoring/defaults/main.yml.
+# Opt-in: mysqld_exporter on every mariadb node (node_exporter with node_exporter_enabled).
+tera_monitoring_enabled: false
+# Sources allowed to reach the exporter ports: IPv4 or CIDR. Empty = exporters listen on 127.0.0.1
+# only. Like every *_sources, only enforced by Tera's firewalld rich rules (ADR 0011).
+tera_monitoring_sources: []
+# OS user of mysqld_exporter; also the MariaDB user 'tera-exporter'@'localhost' IDENTIFIED VIA
+# unix_socket that it logs in as (no password).
+mysqld_exporter_user: tera-exporter
+# node_exporter textfile collector directory; tera-backup writes tera_backup.prom here.
+tera_monitoring_textfile_dir: /var/lib/tera/node_exporter

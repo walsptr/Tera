@@ -1,0 +1,41 @@
+---
+# node_exporter (ADR 0016): own OS user tera-node-exporter, which maps to no MariaDB user. Serves the
+# textfile directory (tera_backup.prom).
+- name: Create the node_exporter user
+  ansible.builtin.user:
+    name: "{{ node_exporter_user }}"
+    system: true
+    create_home: false
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+
+- name: Install the node_exporter binary
+  ansible.builtin.include_tasks: binary.yml
+  vars:
+    _monitoring_bin:
+      name: node_exporter
+      version: "{{ node_exporter_version }}"
+      url: "{{ node_exporter_url }}"
+      sha256: "{{ node_exporter_sha256 }}"
+    _monitoring_release: node_exporter-{{ node_exporter_version }}.linux-{{ _monitoring_arch }}
+
+- name: Remember whether the node_exporter binary changed
+  ansible.builtin.set_fact:
+    _monitoring_node_bin_changed: "{{ _monitoring_bin_install is changed }}"
+
+- name: Install the node_exporter unit
+  ansible.builtin.template:
+    src: tera-node-exporter.service.j2
+    dest: /etc/systemd/system/tera-node-exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: _monitoring_node_unit
+
+- name: Start node_exporter
+  ansible.builtin.systemd_service:
+    name: tera-node-exporter.service
+    enabled: true
+    daemon_reload: "{{ _monitoring_node_unit is changed }}"
+    state: "{{ 'restarted' if (_monitoring_node_bin_changed | bool) or (_monitoring_node_unit is changed) else 'started' }}"
+  ignore_errors: "{{ ansible_check_mode }}"

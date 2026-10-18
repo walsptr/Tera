@@ -14,7 +14,7 @@
         _lb_fw_rules: >-
           {{ (_lb_peers | map('regex_replace', '^(.*)$',
                               'rule family="ipv4" source address="\1" protocol value="vrrp" accept') | list)
-             + (haproxy_stats_sources | map('tera_fw_rich_rule', haproxy_stats_port ~ '/tcp') | list)
+             + (_lb_stats_sources | map('tera_fw_rich_rule', haproxy_stats_port ~ '/tcp') | list)
              + ((mariadb_client_sources | map('tera_fw_rich_rule', mariadb_port ~ '/tcp') | list)
                 if (inventory_hostname not in groups['mariadb'] and '0.0.0.0/0' not in mariadb_client_sources)
                 else []) }}
@@ -22,6 +22,10 @@
           {{ ['protocol value="vrrp"', 'port port="' ~ haproxy_stats_port ~ '"']
              + (['port port="' ~ mariadb_port ~ '"'] if inventory_hostname not in groups['mariadb'] else []) }}
       vars:
+        # /metrics lives on the stats port (ADR 0016).
+        _lb_stats_sources: >-
+          {{ (haproxy_stats_sources + (tera_monitoring_sources if (haproxy_prometheus_enabled | bool) else []))
+             | unique | list }}
         _lb_peers: >-
           {{ groups['loadbalancer'] | reject('equalto', inventory_hostname)
              | map('extract', hostvars, 'tera_listen_address') | list }}

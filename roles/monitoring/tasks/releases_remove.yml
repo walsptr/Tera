@@ -1,0 +1,18 @@
+---
+# Downloaded and unpacked releases of one exporter (_monitoring_bin.name), except _monitoring_keep.
+- name: Find releases of {{ _monitoring_bin.name }}
+  ansible.builtin.find:
+    paths: "{{ monitoring_download_dir }}"
+    patterns: "{{ _monitoring_bin.name }}-*"
+    file_type: any
+  register: _monitoring_releases
+
+- name: Remove old releases of {{ _monitoring_bin.name }}
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ _monitoring_releases.files | map(attribute='path')
+       | reject('in', [monitoring_download_dir ~ '/' ~ _monitoring_keep,
+                       monitoring_download_dir ~ '/' ~ _monitoring_keep ~ '.tar.gz'])
+       | list }}

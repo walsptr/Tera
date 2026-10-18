@@ -1,0 +1,19 @@
+# Managed by Tera - JANGAN edit manual (ADR 0016).
+[Unit]
+Description=Tera node_exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ node_exporter_user }}
+Group={{ node_exporter_user }}
+ExecStart=/usr/local/bin/node_exporter --web.listen-address={{ _monitoring_listen }}:{{ node_exporter_port }} --collector.textfile.directory={{ tera_monitoring_textfile_dir }}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

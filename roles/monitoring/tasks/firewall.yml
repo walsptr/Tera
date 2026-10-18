@@ -1,0 +1,54 @@
+---
+# firewalld for the exporter ports (ADR 0016, pattern of ADR 0011): only when firewalld runs, default
+# zone. Tera owns the rich rules for these ports: one per source and enabled exporter, none when the
+# sources are empty (exporters then listen on 127.0.0.1), monitoring is off or on destroy.
+- name: Collect service facts for firewall
+  ansible.builtin.service_facts:
+
+- name: Manage firewalld
+  when: (ansible_facts['services']['firewalld.service']['state'] | default('')) == 'running'
+  block:
+    - name: Compute expected exporter firewall rules
+      ansible.builtin.set_fact:
+        _monitoring_fw_rules: >-
+          {{ [] if (_monitoring_fw_close_all | default(false) | bool) else
+             (tera_monitoring_sources
+              | product(_monitoring_exporters | selectattr('enabled') | map(attribute='port') | map('regex_replace', '$', '/tcp') | list)
+              | map('tera_fw_rich_rule') | list) }}
+        _monitoring_fw_owned_ports: "{{ _monitoring_exporters | map(attribute='port') | map('string') | list }}"
+
+    - name: Read current firewalld rules
+      ansible.posix.firewalld_info:
+        active_zones: true
+      register: _monitoring_fw_info
+      check_mode: false
+
+    - name: Compute exporter firewall rules to remove
+      ansible.builtin.set_fact:
+        _monitoring_fw_remove: >-
+          {{ (_monitoring_fw_zone.rich_rules | default([]))
+             | select('search', 'port port="(' ~ (_monitoring_fw_owned_ports | join('|')) ~ ')"')
+             | reject('in', _monitoring_fw_rules) | list }}
+      vars:
+        _monitoring_fw_zone: "{{ _monitoring_fw_info.firewalld_info.zones[_monitoring_fw_info.firewalld_info.default_zone] }}"
+
+    - name: Show exporter firewall rules Tera will remove
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: aturan firewalld yang akan dihapus Tera (ADR 0016): {{ _monitoring_fw_remove }}."
+      when: _monitoring_fw_remove | length > 0
+
+    - name: Remove exporter rich rules that are no longer expected
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: disabled
+      loop: "{{ _monitoring_fw_remove }}"
+
+    - name: Add expected exporter rich rules
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ _monitoring_fw_rules }}"

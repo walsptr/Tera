@@ -13,3 +13,6 @@
 
 - name: Import backup playbook
   ansible.builtin.import_playbook: playbooks/backup.yml
+
+- name: Import monitoring playbook
+  ansible.builtin.import_playbook: playbooks/monitoring.yml

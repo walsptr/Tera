@@ -53,6 +53,18 @@
       when: mariadb_cluster_mode == 'galera'
       no_log: true
 
+    # mysqld_exporter (ADR 0016): unix_socket like root (ADR 0008), so only the OS user of the same name
+    # can log in; no password. Dropped again when monitoring is turned off.
+    - name: Manage the exporter user
+      ansible.mysql.mysql_user:
+        name: "{{ mysqld_exporter_user }}"
+        host: localhost
+        plugin: unix_socket
+        priv: "*.*:PROCESS,SLAVE MONITOR/performance_schema.*:SELECT"
+        resource_limits:
+          MAX_USER_CONNECTIONS: 3
+        state: "{{ 'present' if (tera_monitoring_enabled | bool) else 'absent' }}"
+
     - name: Manage databases
       ansible.mysql.mysql_db:
         name: "{{ item.name }}"

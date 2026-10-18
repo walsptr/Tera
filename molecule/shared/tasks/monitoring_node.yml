@@ -1,0 +1,55 @@
+---
+# Node-local monitoring checks (ADR 0016), shared by monitoring and monitoring-podman:
+# - tera-exporter logs in to MariaDB through unix_socket, tera-node-exporter is refused;
+# - the exporter user has exactly the ADR grants and MAX_USER_CONNECTIONS 3, the client file no secret;
+# - tera-node-exporter can list the textfile directory and read tera_backup.prom.
+- name: Log in as tera-exporter
+  ansible.builtin.command:
+    cmd: runuser -u tera-exporter -- mariadb -N -B -e "SELECT CURRENT_USER()"
+  register: _se_mon_login
+  changed_when: false
+  failed_when: false
+
+- name: Log in as tera-node-exporter
+  ansible.builtin.command:
+    cmd: runuser -u tera-node-exporter -- mariadb -N -B -e "SELECT CURRENT_USER()"
+  register: _se_mon_login_node
+  changed_when: false
+  failed_when: false
+
+- name: Read the exporter grants
+  ansible.builtin.command:
+    cmd: mariadb -N -B -e "SHOW GRANTS FOR 'tera-exporter'@'localhost'"
+  register: _se_mon_grants
+  changed_when: false
+
+- name: Read the exporter client file
+  ansible.builtin.slurp:
+    src: /etc/tera-exporter/my.cnf
+  register: _se_mon_cnf
+
+- name: Read tera_backup.prom as tera-node-exporter
+  ansible.builtin.command:
+    cmd: runuser -u tera-node-exporter -- sh -c 'ls /var/lib/tera/node_exporter && cat /var/lib/tera/node_exporter/tera_backup.prom'
+  register: _se_mon_prom
+  changed_when: false
+  failed_when: false
+
+- name: Assert the exporter users and files
+  ansible.builtin.assert:
+    that:
+      - _se_mon_login.rc == 0
+      - _se_mon_login.stdout == 'tera-exporter@localhost'
+      - _se_mon_login_node.rc != 0
+      - _se_mon_login_node.stderr is search('Access denied')
+      - _se_mon_grants.stdout is search('GRANT PROCESS, (SLAVE|REPLICA) MONITOR ON \*\.\* TO')
+      - _se_mon_grants.stdout is search('unix_socket')
+      - _se_mon_grants.stdout is search('MAX_USER_CONNECTIONS 3')
+      - _se_mon_grants.stdout is search('GRANT SELECT ON `performance_schema`\.\* TO')
+      - _se_mon_grants.stdout_lines | length == 2
+      - (_se_mon_cnf.content | b64decode) is not search('^\s*password', multiline=True)
+      - _se_mon_prom.rc == 0
+      - _se_mon_prom.stdout is search('tera_backup_scheduled')
+    fail_msg: >-
+      login={{ _se_mon_login.stdout }}/{{ _se_mon_login.stderr }} node_login={{ _se_mon_login_node.rc }}/{{ _se_mon_login_node.stderr }}
+      grants={{ _se_mon_grants.stdout_lines | to_json }} prom={{ _se_mon_prom.rc }}/{{ _se_mon_prom.stderr }}

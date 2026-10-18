@@ -5,6 +5,25 @@
 # - keepalived.conf: role template, or config/keepalived/keepalived.conf as a full replacement.
 # Validated before writing; applied with a reload (handlers, ADR 0007). Both files hold secrets
 # (stats password, auth_pass): no_log and no diff.
+# ADR 0016: every target OS ships HAProxy with the exporter (spike 2026-10-16), but a custom build may not.
+- name: Check HAProxy has the Prometheus exporter
+  ansible.builtin.command:
+    cmd: haproxy -vv
+  register: _lb_haproxy_vv
+  changed_when: false
+  check_mode: false
+  when: haproxy_prometheus_enabled | bool
+
+- name: Refuse /metrics without the Prometheus exporter
+  ansible.builtin.assert:
+    that:
+      - _lb_haproxy_vv.stdout is search('prometheus-exporter')
+    fail_msg: >-
+      HAProxy di {{ inventory_hostname }} dibangun tanpa Prometheus exporter (tidak ada prometheus-exporter
+      di haproxy -vv). Pasang paket HAProxy distro, atau set haproxy_prometheus_enabled: false.
+    quiet: true
+  when: haproxy_prometheus_enabled | bool
+
 - name: Find load balancer custom config
   ansible.builtin.set_fact:
     _lb_haproxy_custom: "{{ query('ansible.builtin.fileglob', tera_config_dir ~ '/haproxy/haproxy.cfg') }}"

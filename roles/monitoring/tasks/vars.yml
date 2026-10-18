@@ -1,0 +1,10 @@
+---
+- name: Load OS family variables
+  ansible.builtin.include_vars: "{{ ansible_facts['os_family'] }}.yml"
+
+- name: Set monitoring facts
+  ansible.builtin.set_fact:
+    # Release tarball architecture; empty = not supported (prechecks).
+    _monitoring_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts['architecture']] | default('') }}"
+    # ADR 0016: no sources = local only, even where no firewall protects the port.
+    _monitoring_listen: "{{ tera_listen_address if (tera_monitoring_sources | length > 0) else '127.0.0.1' }}"

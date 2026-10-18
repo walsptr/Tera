@@ -1,0 +1,67 @@
+---
+# mysqld_exporter (ADR 0016): OS user tera-exporter, logs in through the socket as the MariaDB user of
+# the same name (unix_socket, created by the mariadb role). The client file holds no secret.
+- name: Create the mysqld_exporter user
+  ansible.builtin.user:
+    name: "{{ mysqld_exporter_user }}"
+    system: true
+    create_home: false
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+
+- name: Install the mysqld_exporter binary
+  ansible.builtin.include_tasks: binary.yml
+  vars:
+    _monitoring_bin:
+      name: mysqld_exporter
+      version: "{{ mysqld_exporter_version }}"
+      url: "{{ mysqld_exporter_url }}"
+      sha256: "{{ mysqld_exporter_sha256 }}"
+    _monitoring_release: mysqld_exporter-{{ mysqld_exporter_version }}.linux-{{ _monitoring_arch }}
+
+- name: Remember whether the mysqld_exporter binary changed
+  ansible.builtin.set_fact:
+    _monitoring_mysqld_bin_changed: "{{ _monitoring_bin_install is changed }}"
+
+- name: Create the mysqld_exporter config directory
+  ansible.builtin.file:
+    path: /etc/tera-exporter
+    state: directory
+    owner: root
+    group: "{{ mysqld_exporter_user }}"
+    mode: "0750"
+
+- name: Write the mysqld_exporter client file
+  ansible.builtin.copy:
+    content: |
+      # Managed by Tera - JANGAN edit manual (ADR 0016). unix_socket login, no password.
+      [client]
+      user = {{ mysqld_exporter_user }}
+      socket = {{ _monitoring_mariadb_socket }}
+    dest: /etc/tera-exporter/my.cnf
+    owner: root
+    group: "{{ mysqld_exporter_user }}"
+    mode: "0640"
+  register: _monitoring_mysqld_cnf
+
+- name: Install the mysqld_exporter unit
+  ansible.builtin.template:
+    src: tera-mysqld-exporter.service.j2
+    dest: /etc/systemd/system/tera-mysqld-exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: _monitoring_mysqld_unit
+
+# Restarted only when this run changed the binary, the client file or the unit. --check on a first
+# install: there is no unit to start yet.
+- name: Start mysqld_exporter
+  ansible.builtin.systemd_service:
+    name: tera-mysqld-exporter.service
+    enabled: true
+    daemon_reload: "{{ _monitoring_mysqld_unit is changed }}"
+    state: "{{ 'restarted' if _monitoring_mysqld_changed | bool else 'started' }}"
+  ignore_errors: "{{ ansible_check_mode }}"
+  vars:
+    _monitoring_mysqld_changed: >-
+      {{ (_monitoring_mysqld_bin_changed | bool) or (_monitoring_mysqld_cnf is changed) or (_monitoring_mysqld_unit is changed) }}

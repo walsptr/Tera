@@ -5,6 +5,9 @@
 # Sources allowed to reach the HAProxy stats page (haproxy_stats_port) when Tera manages firewalld:
 # IPv4/CIDR list. Empty = only the load balancer nodes themselves.
 haproxy_stats_sources: []
+# Prometheus metrics at /metrics on the stats port (ADR 0016), behind the stats user and password.
+# Sources: haproxy_stats_sources plus tera_monitoring_sources.
+haproxy_prometheus_enabled: false
 # Client and server timeouts; MariaDB closes idle sessions after wait_timeout (28800 s = 8 h).
 haproxy_timeout_client: 8h
 haproxy_timeout_server: 8h

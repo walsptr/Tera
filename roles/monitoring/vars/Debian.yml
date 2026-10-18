@@ -1,0 +1,2 @@
+---
+_monitoring_mariadb_socket: /run/mysqld/mysqld.sock

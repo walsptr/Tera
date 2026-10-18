@@ -1,0 +1,15 @@
+---
+# Monitoring exporters (ADR 0016) on the mariadb nodes. After backup.yml: tera-backup and its
+# config.json (metrics_path) must exist before the first metrics are written.
+- name: Apply monitoring role
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run monitoring action
+      ansible.builtin.include_role:
+        name: monitoring
+        tasks_from: "{{ tera_action }}.yml"

@@ -133,3 +133,82 @@ def test_selection_lists_the_chain_prefix():
     assert out["chain_id"] == "c1"
     assert out["id"] == "c1/1"
     assert [b["name"] for b in out["backups"]] == [FULL["name"], INC1["name"]]
+
+
+# --- Metrics (ADR 0016) ---
+
+CFG = {"cluster": "prod-a", "scheduled": True, "targets": [{"name": "bk"}]}
+
+
+def sample(text, name, **labels):
+    """Value of the sample `name` with exactly these labels (plus cluster)."""
+    pairs = [("cluster", "prod-a")] + sorted(labels.items())
+    wanted = name + "{" + ",".join(f'{k}="{v}"' for k, v in pairs) + "}"
+    for line in text.splitlines():
+        if not line.startswith("#") and sorted_labels(line.split(" ")[0]) == sorted_labels(wanted):
+            return int(line.split(" ")[1])
+    raise KeyError(wanted)
+
+
+def sorted_labels(series):
+    name, _, rest = series.partition("{")
+    return name, sorted(rest.rstrip("}").split(","))
+
+
+def test_epoch_parses_iso_and_defaults_to_zero():
+    assert tb.epoch("1970-01-02T00:00:00Z") == 86400
+    assert tb.epoch(None) == 0
+    assert tb.epoch("kemarin") == 0
+
+
+def test_metrics_exist_with_zero_before_the_first_backup():
+    text = tb.render_metrics(CFG, {})
+    assert sample(text, "tera_backup_scheduled") == 1
+    for t in ("full", "incremental"):
+        assert sample(text, "tera_backup_last_success_timestamp_seconds", type=t) == 0
+        assert sample(text, "tera_backup_last_attempt_timestamp_seconds", type=t) == 0
+        assert sample(text, "tera_backup_last_attempt_success", type=t) == 0
+    assert sample(text, "tera_backup_target_last_push_timestamp_seconds", target="bk") == 0
+    assert sample(text, "tera_backup_verify_last_timestamp_seconds") == 0
+    for r in tb.VERIFY_RESULTS:
+        assert sample(text, "tera_backup_verify_last_result", result=r) == 0
+
+
+def test_metrics_keep_the_last_success_after_a_failed_attempt():
+    status = {
+        "last": {"full": {"result": "failed", "finished_at": "1970-01-03T00:00:00Z"}},
+        "last_success": {
+            "full": {"result": "ok", "finished_at": "1970-01-02T00:00:00Z", "size_bytes": 42}
+        },
+        "targets": {"bk": {"result": "ok", "at": "1970-01-02T00:01:00Z"}},
+        "verify": {"last": {"result": "failed", "at": "1970-01-02T01:00:00Z"}},
+    }
+    text = tb.render_metrics(CFG, status)
+    assert sample(text, "tera_backup_last_attempt_timestamp_seconds", type="full") == 2 * 86400
+    assert sample(text, "tera_backup_last_attempt_success", type="full") == 0
+    assert sample(text, "tera_backup_last_success_timestamp_seconds", type="full") == 86400
+    assert sample(text, "tera_backup_last_success_size_bytes", type="full") == 42
+    assert sample(text, "tera_backup_target_last_push_success", target="bk") == 1
+    assert sample(text, "tera_backup_verify_last_result", result="failed") == 1
+    assert sample(text, "tera_backup_verify_last_result", result="ok") == 0
+
+
+def test_metrics_of_a_node_without_scheduled_backups():
+    text = tb.render_metrics(dict(CFG, scheduled=False), {"last": {"full": {"result": "ok"}}})
+    assert sample(text, "tera_backup_scheduled") == 0
+    assert "tera_backup_last_success_timestamp_seconds" not in text
+
+
+def test_metrics_label_values_are_escaped():
+    text = tb.render_metrics({"cluster": 'a"b\\c', "scheduled": False}, {})
+    assert 'cluster="a\\"b\\\\c"' in text
+
+
+def test_write_metrics_is_atomic_stable_and_world_readable(tmp_path):
+    path = tmp_path / "tera_backup.prom"
+    cfg = dict(CFG, metrics_path=str(path))
+    assert tb.write_metrics(cfg, {}) is True
+    assert (path.stat().st_mode & 0o777) == 0o644
+    assert tb.write_metrics(cfg, {}) is False
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["tera_backup.prom"]
+    assert tb.write_metrics(dict(cfg, metrics_path=None), {}) is False

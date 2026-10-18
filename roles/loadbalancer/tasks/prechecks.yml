@@ -65,6 +65,24 @@
          if (haproxy_stats_sources is sequence and haproxy_stats_sources is not string)
          else [haproxy_stats_sources] }}
 
+# ADR 0016: every *_sources is only enforced by Tera's firewalld rich rules.
+- name: Collect service facts for the haproxy_stats_sources warning
+  ansible.builtin.service_facts:
+  when: haproxy_stats_sources | length > 0
+
+- name: Warn when haproxy_stats_sources is not enforced
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: {{ inventory_hostname }}: haproxy_stats_sources membatasi sumber ({{ haproxy_stats_sources | join(', ') }}),
+      tetapi firewalld {{ 'tidak berjalan' if _lb_fw_managed | bool else 'tidak dikelola Tera' }} di host ini:
+      sources tidak ditegakkan, port {{ haproxy_stats_port }} terbuka untuk siapa saja yang bisa menjangkau host ini.
+      Batasi lewat firewall jaringan atau ufw (README, bagian Keamanan), atau jalankan firewalld.
+  when:
+    - haproxy_stats_sources | length > 0
+    - not (_lb_fw_managed | bool) or (ansible_facts['services']['firewalld.service']['state'] | default('')) != 'running'
+  vars:
+    _lb_fw_managed: "{{ (tera_manage_firewall | bool) and (loadbalancer_firewall_manage | bool) }}"
+
 - name: Check load balancer passwords are set
   ansible.builtin.assert:
     that:

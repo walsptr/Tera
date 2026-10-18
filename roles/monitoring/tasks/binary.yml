@@ -1,0 +1,61 @@
+---
+# Download, check and install one exporter binary (ADR 0016). _monitoring_bin: name, version, url, sha256.
+# get_url verifies the checksum before the file lands; a mismatch stops here with nothing installed.
+- name: Create the download directory
+  ansible.builtin.file:
+    path: "{{ monitoring_download_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download {{ _monitoring_bin.name }}
+  block:
+    - name: Download release {{ _monitoring_bin.name ~ ' ' ~ _monitoring_bin.version }}
+      ansible.builtin.get_url:
+        url: "{{ _monitoring_bin.url }}"
+        dest: "{{ monitoring_download_dir }}/{{ _monitoring_release }}.tar.gz"
+        checksum: "sha256:{{ _monitoring_bin.sha256[_monitoring_arch] }}"
+        owner: root
+        group: root
+        mode: "0644"
+  rescue:
+    - name: Report the failed download
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }}: unduhan {{ _monitoring_bin.name }} {{ _monitoring_bin.version }} gagal atau
+          checksum tidak cocok; tidak ada yang dipasang. Periksa {{ _monitoring_bin.name }}_url
+          ({{ _monitoring_bin.url }}) dan {{ _monitoring_bin.name }}_sha256 untuk {{ _monitoring_arch }}.
+          Detail: {{ ansible_failed_result.msg | default('') }}
+
+- name: Check the unpacked {{ _monitoring_bin.name }}
+  ansible.builtin.stat:
+    path: "{{ monitoring_download_dir }}/{{ _monitoring_release }}/{{ _monitoring_bin.name }}"
+  register: _monitoring_unpacked
+
+# --check: nothing was downloaded on a first install, so there is nothing to unpack or copy yet.
+- name: Unpack {{ _monitoring_bin.name }}
+  ansible.builtin.unarchive:
+    src: "{{ monitoring_download_dir }}/{{ _monitoring_release }}.tar.gz"
+    dest: "{{ monitoring_download_dir }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: "{{ monitoring_download_dir }}/{{ _monitoring_release }}/{{ _monitoring_bin.name }}"
+  when: _monitoring_unpacked.stat.exists or not ansible_check_mode
+
+- name: Install the binary of {{ _monitoring_bin.name }}
+  ansible.builtin.copy:
+    src: "{{ monitoring_download_dir }}/{{ _monitoring_release }}/{{ _monitoring_bin.name }}"
+    dest: /usr/local/bin/{{ _monitoring_bin.name }}
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  register: _monitoring_bin_install
+  when: _monitoring_unpacked.stat.exists or not ansible_check_mode
+
+- name: Remove other releases of {{ _monitoring_bin.name }}
+  ansible.builtin.include_tasks: releases_remove.yml
+  vars:
+    _monitoring_keep: "{{ _monitoring_release }}"

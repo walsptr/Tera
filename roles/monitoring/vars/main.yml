@@ -1,0 +1,16 @@
+---
+# Exporters managed by the role (ADR 0016): unit, OS user and extra paths removed with the exporter.
+_monitoring_exporters:
+  - name: mysqld_exporter
+    unit: tera-mysqld-exporter.service
+    user: "{{ mysqld_exporter_user }}"
+    port: "{{ mysqld_exporter_port }}"
+    enabled: "{{ tera_monitoring_enabled | bool }}"
+    paths:
+      - /etc/tera-exporter
+  - name: node_exporter
+    unit: tera-node-exporter.service
+    user: "{{ node_exporter_user }}"
+    port: "{{ node_exporter_port }}"
+    enabled: "{{ (tera_monitoring_enabled | bool) and (node_exporter_enabled | bool) }}"
+    paths: []

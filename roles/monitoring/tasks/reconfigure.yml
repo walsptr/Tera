@@ -1,0 +1,4 @@
+---
+# Monitoring settings are applied the same way by deploy and reconfigure.
+- name: Apply monitoring settings
+  ansible.builtin.import_tasks: deploy.yml

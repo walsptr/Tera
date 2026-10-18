@@ -13,6 +13,7 @@ Commands:
   list                   local backups as JSON
   select --backup ID     the chain needed to restore ID (latest or <chain_id>/<seq>) as JSON
   status                 the status file as JSON
+  metrics                write the status as Prometheus metrics (textfile collector, ADR 0016)
 
 Python 3.9 compatible (EL9).
 """
@@ -251,6 +252,119 @@ def payload_name(meta: dict) -> str:
     return PAYLOAD + (".gpg" if meta.get("encrypted") else "")
 
 
+# --- Metrics (ADR 0016) -------------------------------------------------------------------------
+
+BACKUP_TYPES = ("full", "incremental")
+VERIFY_RESULTS = ("ok", "failed", "skipped", "warning")
+
+
+def epoch(value) -> int:
+    """Seconds since the epoch of an iso() timestamp; 0 for a missing or unreadable one."""
+    try:
+        dt = datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return 0
+    return int(dt.replace(tzinfo=datetime.timezone.utc).timestamp())
+
+
+def label_value(value) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def render_metrics(cfg: dict, status: dict) -> str:
+    """The status as Prometheus text format. Only values from the status file, never the time of
+    writing, so the output is stable. On the node that takes the scheduled backups every metric
+    exists from the first deploy: timestamps stay 0 until the first attempt, so an age alert fires
+    for a node that never had a backup. Other nodes only export tera_backup_scheduled 0."""
+    out = []
+
+    def metric(name: str, help_text: str, samples: list) -> None:
+        out.append(f"# HELP {name} {help_text}")
+        out.append(f"# TYPE {name} gauge")
+        for labels, value in samples:
+            pairs = [("cluster", cfg["cluster"])] + labels
+            text = ",".join(f'{k}="{label_value(v)}"' for k, v in pairs)
+            out.append(f"{name}{{{text}}} {value}")
+
+    scheduled = bool(cfg.get("scheduled"))
+    metric(
+        "tera_backup_scheduled",
+        "1 if this node takes the scheduled backups of the cluster.",
+        [([], int(scheduled))],
+    )
+    if scheduled:
+        last = status.get("last", {})
+        success = status.get("last_success", {})
+        metric(
+            "tera_backup_last_attempt_timestamp_seconds",
+            "End of the last backup attempt per type, 0 if none.",
+            [([("type", t)], epoch(last.get(t, {}).get("finished_at"))) for t in BACKUP_TYPES],
+        )
+        metric(
+            "tera_backup_last_attempt_success",
+            "1 if the last backup attempt per type succeeded.",
+            [([("type", t)], int(last.get(t, {}).get("result") == "ok")) for t in BACKUP_TYPES],
+        )
+        metric(
+            "tera_backup_last_success_timestamp_seconds",
+            "End of the last successful backup per type, 0 if none.",
+            [([("type", t)], epoch(success.get(t, {}).get("finished_at"))) for t in BACKUP_TYPES],
+        )
+        metric(
+            "tera_backup_last_success_size_bytes",
+            "Size of the last successful backup per type.",
+            [([("type", t)], int(success.get(t, {}).get("size_bytes", 0))) for t in BACKUP_TYPES],
+        )
+        targets = status.get("targets", {})
+        names = [t["name"] for t in cfg.get("targets", [])]
+        if names:
+            metric(
+                "tera_backup_target_last_push_timestamp_seconds",
+                "Time of the last push to a backup target, 0 if none.",
+                [([("target", n)], epoch(targets.get(n, {}).get("at"))) for n in names],
+            )
+            metric(
+                "tera_backup_target_last_push_success",
+                "1 if the last push to a backup target succeeded.",
+                [([("target", n)], int(targets.get(n, {}).get("result") == "ok")) for n in names],
+            )
+        verify = status.get("verify", {}).get("last", {})
+        metric(
+            "tera_backup_verify_last_timestamp_seconds",
+            "Time of the last level-2 verification, 0 if none.",
+            [([], epoch(verify.get("at")))],
+        )
+        metric(
+            "tera_backup_verify_last_result",
+            "Result of the last level-2 verification (1 for the current result).",
+            [([("result", r)], int(verify.get("result") == r)) for r in VERIFY_RESULTS],
+        )
+    return "\n".join(out) + "\n"
+
+
+def write_metrics(cfg: dict, status: dict) -> bool:
+    """Write render_metrics() to cfg["metrics_path"] atomically, world-readable (node_exporter runs
+    as its own user). Returns True when the file changed; no metrics_path = monitoring off."""
+    path = cfg.get("metrics_path")
+    if not path:
+        return False
+    text = render_metrics(cfg, status)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() == text:
+                return False
+    except OSError:
+        pass
+    tmp = path + ".tmp"  # the textfile collector only reads *.prom
+    with open(tmp, "w", encoding="utf-8") as fh:
+        os.fchmod(fh.fileno(), 0o644)
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    return True
+
+
 # --- Node state -------------------------------------------------------------------------------
 
 
@@ -322,6 +436,11 @@ class Node:
         data["host"] = self.cfg["host"]
         fn(data)
         write_json(self.cfg["status_path"], data)
+        # Metrics never fail a backup, a push or a verification.
+        try:
+            write_metrics(self.cfg, data)
+        except OSError as exc:
+            print(f"tera-backup: metrics tidak bisa ditulis: {exc}", file=sys.stderr)
 
     def record(self, section: str, key: str, entry: dict) -> None:
         def apply(data):
@@ -860,6 +979,19 @@ def cmd_status(node: Node, args) -> int:
     return 0
 
 
+def cmd_metrics(node: Node, args) -> int:
+    if not node.cfg.get("metrics_path"):
+        print("tera-backup: metrics off")
+        return 0
+    try:
+        changed = write_metrics(node.cfg, node.status())
+    except OSError as exc:
+        print(f"tera-backup: metrics tidak bisa ditulis: {exc}", file=sys.stderr)
+        return 1
+    print("tera-backup: metrics changed" if changed else "tera-backup: metrics unchanged")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="tera-backup")
     parser.add_argument("--config", default=CONFIG_PATH)
@@ -882,6 +1014,7 @@ def main(argv=None) -> int:
     sel.add_argument("--root")
     sel.add_argument("--backup", required=True)
     sub.add_parser("status")
+    sub.add_parser("metrics")
     args = parser.parse_args(argv)
     with open(args.config, encoding="utf-8") as fh:
         node = Node(json.load(fh))
@@ -889,7 +1022,7 @@ def main(argv=None) -> int:
     handlers = {
         "run": cmd_run, "push": cmd_push, "verify": cmd_verify, "prepare": cmd_prepare,
         "list": cmd_list,
-        "select": cmd_select, "status": cmd_status,
+        "select": cmd_select, "status": cmd_status, "metrics": cmd_metrics,
     }  # fmt: skip
     return handlers[args.command](node, args)
 

@@ -91,3 +91,34 @@ kosong) di host yang firewalld-nya tidak berjalan atau tidak dikelola. README me
   dibatasi di Rocky (host di luar daftar ditolak); daftar kosong = port hanya di `127.0.0.1`; peringatan prechecks
   "sources tidak ditegakkan" di Ubuntu tanpa firewalld saat sumber dibatasi, dan tidak muncul di Rocky; `/metrics` HAProxy
   dengan dan tanpa autentikasi; idempotence `changed=0`; tanpa denial SELinux.
+
+## Revisi
+
+- 2026-10-18: keputusan pemilik proyek saat menyetujui rencana implementasi (menggantikan bagian yang
+  bertentangan di atas):
+  - **Umur backup tidak diekspor.** File `.prom` hanya berisi timestamp (umur yang ditulis ke file basi di antara
+    backup); umur dihitung di Prometheus (`time() - ...`). Diekspor juga timestamp percobaan terakhir per tipe,
+    bukan hanya sukses terakhir. Di node backup semua metrik ada sejak deploy pertama dengan nilai `0`, agar alert
+    umur menyala untuk node yang belum pernah berhasil backup. README memuat contoh rule alert (tidak ada backup
+    sukses dalam 26 jam, verifikasi level 2 gagal).
+  - **User OS terpisah:** `tera-exporter` untuk `mysqld_exporter` (dipetakan ke user MariaDB lewat
+    `unix_socket`) dan `tera-node-exporter` untuk `node_exporter`, sehingga `node_exporter` tidak bisa login ke
+    MariaDB. Diuji: `tera-node-exporter` ditolak MariaDB.
+  - Status ke metrik lewat subcommand `tera-backup metrics` di `tera_backup.py`, bukan script terpisah
+    (diusulkan Claude, disetujui pemilik).
+  - Dengan `haproxy_prometheus_enabled`, `tera_monitoring_sources` juga diizinkan ke port stats (rule firewall),
+    karena `/metrics` ada di sana; `/metrics` tetap memakai auth stats (Prometheus memakai basic auth).
+  - Direktori textfile dan file `.prom` harus bisa dibaca `tera-node-exporter` (diuji).
+  - README menyebut URL binary bisa diarahkan ke mirror internal untuk lingkungan tanpa internet.
+- 2026-10-18: detail implementasi, diusulkan Claude (bukan keputusan pemilik; sampaikan jika perlu diubah):
+  - File `.prom` ditulis oleh `tera-backup` sendiri setiap kali file status berubah (backup, push,
+    verifikasi), bukan lewat `ExecStartPost`/`ExecStopPost` unit backup: `tera backup-verify` menjalankan
+    `tera-backup verify` langsung, di luar unit. Kegagalan menulis metrik tidak menggagalkan backup.
+  - Node yang bukan `mariadb_backup_host` (atau backup mati) hanya mengekspor `tera_backup_scheduled 0`, tanpa
+    timestamp, agar alert umur tidak menyala di node yang memang tidak menjalankan backup.
+  - HAProxy: `http-request use-service prometheus-exporter` melewati `stats auth`, sehingga `/metrics` memeriksa
+    user stats sendiri lewat `userlist` dan `http_auth`.
+  - Mematikan monitoring menghapus exporter, user OS, user MariaDB `tera-exporter`, file metrik, unduhan, dan
+    rule firewall exporter (seperti backup yang dimatikan menghapus timer).
+  - File client exporter di `/etc/tera-exporter/my.cnf` (`0640 root:tera-exporter`), karena `/etc/tera` tidak
+    bisa dibaca user lain.

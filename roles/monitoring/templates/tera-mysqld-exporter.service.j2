@@ -1,0 +1,19 @@
+# Managed by Tera - JANGAN edit manual (ADR 0016).
+[Unit]
+Description=Tera mysqld_exporter
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+User={{ mysqld_exporter_user }}
+Group={{ mysqld_exporter_user }}
+ExecStart=/usr/local/bin/mysqld_exporter --config.my-cnf=/etc/tera-exporter/my.cnf --web.listen-address={{ _monitoring_listen }}:{{ mysqld_exporter_port }}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
