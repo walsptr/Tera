@@ -53,9 +53,11 @@ lint, syntax-check, dan pytest.
   - Docker di host yang sama memasang policy `FORWARD DROP` di iptables. VM tetap mendapat IP dan bisa
     ping gateway `192.168.121.1`, tetapi trafik keluar di-drop: task repo MariaDB gagal dengan
     "Could not fetch signed_by key" / "Network is unreachable" atau timeout. Izinkan jaringan manajemen
-    vagrant-libvirt lewat chain `DOCKER-USER` (sementara, hilang setelah reboot):
+    vagrant-libvirt lewat chain `DOCKER-USER`:
     `sudo iptables -I DOCKER-USER -s 192.168.121.0/24 -j ACCEPT` dan
     `sudo iptables -I DOCKER-USER -d 192.168.121.0/24 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`.
+    Perintah `iptables` saja hilang setelah reboot; di lab pemilik kedua aturan dibuat permanen lewat service
+    systemd `libvirt-docker-forward` yang memasangnya setelah `docker.service` start.
   - vagrant-libvirt 0.11 memakai `virtual_size` dari `metadata.json` box sebagai ukuran disk VM. Box
     Rocky 9.8 menulis `5` padahal image-nya 10 GiB, sehingga disk terpotong dan guest jatuh ke dracut
     emergency mode (tidak pernah mendapat IP). Skenario memaksa `machine_virtual_size: 10`; box dengan
