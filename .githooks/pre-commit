@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Tera pre-commit hook: the lint steps of CI (.github/workflows/ci.yml, job lint) on the working tree.
+# Activate once per clone: git config core.hooksPath .githooks (see AGENTS.md).
+# Bypass only knowingly: git commit --no-verify.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+if [[ -d .venv/bin ]]; then
+  PATH="$PWD/.venv/bin:$PATH"
+fi
+
+for tool in yamllint ansible-lint ruff shellcheck; do
+  command -v "$tool" >/dev/null || { echo "pre-commit: $tool tidak ditemukan; pasang requirements-dev.txt (AGENTS.md)" >&2; exit 1; }
+done
+
+echo "pre-commit: yamllint" >&2
+yamllint .
+echo "pre-commit: ansible-lint" >&2
+ansible-lint -q
+echo "pre-commit: ruff" >&2
+ruff check plugins/ roles/
+echo "pre-commit: shellcheck" >&2
+mapfile -t files < <(find . \( -path ./.git -o -path ./collections -o -path ./.venv \) -prune -o -type f \
+  \( -name '*.sh' -o -name tera -o -name 'backup-target-*' -o -name 'tera-policy-rc.d' -o -path ./.githooks/pre-commit \) -print)
+if [[ ${#files[@]} -gt 0 ]]; then
+  shellcheck "${files[@]}"
+fi

@@ -47,7 +47,10 @@ python3 -m venv .venv
 .venv/bin/ansible-galaxy collection install -r requirements.yml -p ./collections
 .venv/bin/ansible-galaxy collection install -r molecule/requirements.yml -p ./collections   # test only
 source .venv/bin/activate        # atau panggil .venv/bin/<alat> langsung
+git config core.hooksPath .githooks   # pre-commit: yamllint, ansible-lint, ruff, shellcheck (seperti job lint CI)
 ```
+
+Hook pre-commit wajib aktif. Commit yang gagal hook diperbaiki dulu, bukan dilewati dengan `--no-verify`.
 
 ## Perintah
 
