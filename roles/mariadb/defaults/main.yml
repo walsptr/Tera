@@ -73,3 +73,12 @@ mariadb_upgrade_min_free_mb: 1024
 mariadb_upgrade_debian_start_timeout: 600
 # How long to wait for HAProxy to mark a node DOWN after the drain / UP after it (seconds).
 mariadb_upgrade_lb_timeout: 60
+
+# --- Scale in (ADR 0017) -----------------------------------------------------
+# tera scale-in -e tera_scale_in_host=<host>: refused for the single_writer writer (groups['mariadb'][0]) and
+# for mariadb_backup_host unless these are true. The writer moves to the next node after step 2.
+mariadb_scale_in_allow_writer: false
+mariadb_scale_in_allow_backup_host: false
+# A host with the "removed" marker is refused by every action; deploy adds it back as a new node only with
+# this true (and mariadb_galera_allow_sst_overwrite when its datadir still holds databases).
+mariadb_scale_in_allow_readd: false

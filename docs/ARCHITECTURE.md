@@ -13,15 +13,16 @@
 tera                                  # CLI bash
 ansible.cfg  requirements.yml  requirements-dev.txt  site.yml  .gitignore
 .ansible-lint  .yamllint  pyproject.toml  .github/workflows/ci.yml
-playbooks/{facts,common,mariadb,loadbalancer,backup,monitoring,mariadb-recover,mariadb-backup,mariadb-restore,mariadb-upgrade,destroy}.yml
+playbooks/{facts,common,mariadb,loadbalancer,backup,monitoring,mariadb-recover,mariadb-backup,mariadb-restore,mariadb-upgrade,mariadb-scale-in,destroy}.yml
 playbooks/tasks/listen_address.yml     # tera_listen_address, dipakai facts.yml dan mariadb-restore.yml
 plugins/filter/{merge_ini,tera_ip}.py   plugins/tests/test_{merge_ini,tera_ip,tera_backup}.py   # tests outside filter/: Ansible loads filter subdirs as plugins
 roles/tera_defaults/defaults/main.yml
 roles/common/tasks/{prechecks,deploy,reconfigure}.yml
 roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
   tasks entry point: prechecks deploy reconfigure restart recover destroy restore_{prepare,apply,finish}
+                     upgrade_{prechecks,repo} upgrade scale_in_prechecks scale_in
   tasks internal:    vars install firewall config status standalone galera users clustercheck selinux wait_synced
-                     restore_transfer restore_abort
+                     restore_transfer restore_abort removed_check upgrade_{packages,lb_wait,leftovers}
   templates:         tera.cnf.j2 tera-clustercheck.j2 tera-clustercheck.socket.j2 tera-clustercheck@.service.j2
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
 roles/mariadb_backup/{defaults,vars,templates,files/{tera_backup.py,backup-target-rsync}}   # ADR 0012
@@ -32,7 +33,7 @@ roles/monitoring/{defaults,vars/{main,Debian,RedHat}.yml,templates}   # ADR 0016
   tasks internal:    vars mysqld_exporter node_exporter binary releases_remove remove firewall
 inventory/sample/{hosts.yml,group_vars/all/{tera.yml,passwords.yml},config/{mariadb,haproxy/conf.d,keepalived}}
 docs/
-molecule/{shared,standalone,standalone-podman,galera,reconfigure,recover,recover-poweroff,loadbalancer,destroy,backup,backup-galera,upgrade,upgrade-podman,monitoring,monitoring-podman}/   # shared = playbook dan task bersama
+molecule/{shared,standalone,standalone-podman,galera,reconfigure,recover,recover-poweroff,loadbalancer,destroy,backup,backup-galera,upgrade,upgrade-podman,monitoring,monitoring-podman,scale}/   # shared = playbook dan task bersama
 ```
 
 ## Inventory cluster
@@ -73,6 +74,7 @@ Nilai yang wajib unik per cluster dan divalidasi di prechecks:
 | `reconfigure -i` | `site.yml` | `reconfigure` |
 | `recover -i [-e mariadb_recover_from=<node>]` | `playbooks/mariadb-recover.yml` | – |
 | `upgrade -i -e mariadb_upgrade_to=<X.Y.Z\|latest> [--check]` | `playbooks/mariadb-upgrade.yml` (ADR 0015) | `upgrade` |
+| `scale-in -i -e tera_scale_in_host=<host> --yes-i-really-mean-it` | `playbooks/mariadb-scale-in.yml` (ADR 0017, `-e tera_scale_in_confirm=true`) | `scale_in` |
 | `destroy -i … --yes-i-really-really-mean-it [--keep-data]` | `playbooks/destroy.yml` (`-e tera_destroy_confirm=true`, `--keep-data` → `-e tera_destroy_keep_data=true`) | – |
 | `backup -i [--incremental]` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=run -e mariadb_backup_type=full\|incremental`) | – |
 | `backup-verify -i` | `playbooks/mariadb-backup.yml` (`-e tera_backup_op=verify`) | – |
@@ -127,6 +129,20 @@ mati, start, Synced, tunggu `mariadb-upgrade` dari `debian-start` (Ubuntu), `mar
 `mariadb_upgrade_info`, undrain (blok `always`), tunggu UP. `--check` hanya menjalankan prechecks dan menampilkan
 perubahan repo tanpa menulisnya.
 
+## Alur play `playbooks/mariadb-scale-in.yml` (ADR 0017)
+
+| # | Play | Hosts | Catatan |
+|---|---|---|---|
+| 1 | Confirm | localhost | flag konfirmasi dan `tera_scale_in_host` |
+| 2 | Facts | `mariadb:loadbalancer` | `tera_listen_address` |
+| 3 | Prechecks | `mariadb` | galera, tanpa `--limit`, cluster sehat (Primary, Synced, size lengkap), minimum node, writer/node backup tanpa override, load balancer lain, restore, marker "removed" |
+| 4 | Scale in | `tera_scale_in_host` | lock backup (unit `tera-mariadb-scale-in-lock`), drain, timer backup off, Keepalived (VIP pindah) lalu HAProxy off, MariaDB off, marker "removed" |
+| 5 | Cek | node lain | Synced, size berkurang satu; tampilkan langkah 2 |
+
+Langkah 2 adalah `reconfigure` setelah host dihapus dari inventory. `config.yml` menulis `99-tera.cnf` tanpa
+restart jika satu-satunya perubahan adalah alamat yang hilang dari `wsrep_cluster_address` dan node itu sudah
+melihat cluster yang lebih kecil (pengecualian ADR 0009, lihat `GALERA-LIFECYCLE.md`).
+
 ## Matriks action
 
 | Role | `prechecks` | `deploy` | `reconfigure` |
@@ -160,6 +176,7 @@ spesifik, berisi `0.0.0.0`, interface tidak ada, atau alamat yang sama dipakai l
 | `mariadb_galera_marker` | `{{ tera_state_dir }}/mariadb-galera.bootstrapped` |
 | `mariadb_datadir_marker` | `{{ tera_state_dir }}/mariadb-datadir.initialized` |
 | `mariadb_restore_marker` | `{{ tera_state_dir }}/mariadb-restore.active` (ditulis `tera restore`; backup menolak berjalan selama ada) |
+| `mariadb_removed_marker` | `{{ tera_state_dir }}/mariadb-removed` (ditulis `tera scale-in`; semua action menolak host itu, ADR 0017) |
 | `tera_cluster_name` | nama folder inventory |
 | `mariadb_datadir` | `/var/lib/mysql` (dibaca pengaman SST, `tera recover`, backup, dan restore; samakan jika custom config mengubah datadir) |
 | `mariadb_backup_enabled` | `false` (opt-in; deploy/reconfigure memberi peringatan selama `false`) |
@@ -207,7 +224,9 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_upgrade_package_retries` / `mariadb_upgrade_package_delay` | `3` / `10` |
 | `mariadb_upgrade_min_free_mb` | `1024` (ruang bebas minimal di `/var`) |
 | `mariadb_upgrade_debian_start_timeout` | `600` (Ubuntu: tunggu `mariadb-upgrade` dari `debian-start`) |
-| `mariadb_upgrade_lb_timeout` | `60` (tunggu HAProxy menandai node DOWN/UP) |
+| `mariadb_upgrade_lb_timeout` | `60` (tunggu HAProxy menandai node DOWN/UP; juga dipakai `tera scale-in`) |
+| `mariadb_scale_in_allow_writer` / `mariadb_scale_in_allow_backup_host` | `false` / `false` (`tera scale-in` untuk writer `single_writer` / `mariadb_backup_host`) |
+| `mariadb_scale_in_allow_readd` | `false` (`deploy` menambahkan kembali host bermarker "removed"; datadir berisi database butuh juga `mariadb_galera_allow_sst_overwrite`) |
 | `mariadb_admin_user` | `tera_admin` |
 | `mariadb_admin_hosts` | `["localhost"]` (list host/subnet, mis. `"10.10.10.%"`; `"%"` memicu warning prechecks; host yang dihapus dari list tidak di-drop otomatis) |
 | `mariadb_databases` / `mariadb_users` | `[]` |
@@ -341,6 +360,7 @@ di deploy, reconfigure, dan destroy, untuk role `mariadb` maupun `loadbalancer`.
 | Marker bootstrap | `/etc/tera/mariadb-galera.bootstrapped` |
 | Marker datadir | `/etc/tera/mariadb-datadir.initialized` (`0640 root:mysql`): ditulis setelah datadir pertama kali terinisialisasi; jika marker ada tetapi datadir kosong (tidak ada `mysql/`), deploy gagal dan meminta operator mengecek mount/disk, bukan menginisialisasi database baru |
 | Restart pending marker | `/etc/tera/mariadb-restart-pending` (`0640 root:mysql`, ADR 0009) |
+| Marker removed | `/etc/tera/mariadb-removed` (`0644 root`, ADR 0017): ditulis `tera scale-in` di host yang dikeluarkan (berisi nama cluster dan waktu); selama lock: unit sementara `tera-mariadb-scale-in-lock.service` |
 | Log upgrade | `/var/log/tera/mariadb-upgrade-<versi>-<id run>-{packages,mariadb-upgrade}.log` (`0640 root`, ADR 0015) |
 | Selama upgrade saja | `/usr/sbin/policy-rc.d` milik Tera (Ubuntu, hanya menolak `mariadb`), unit sementara `tera-mariadb-upgrade-lock.service` (memegang lock backup, file `/run/tera-mariadb-upgrade-lock.held`); sisa run terputus dibersihkan `deploy`/`reconfigure`/`upgrade` dengan peringatan |
 | Modul SELinux (RHEL, galera) | `/etc/tera/selinux/tera_galera.{te,mod,pp}`, dimuat dengan `semodule` |

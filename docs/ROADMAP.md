@@ -104,7 +104,7 @@ serta restore lintas cluster menunggu ADR.
 - [x] Kecil: field `galera_position` dihapus dari metadata backup (`format_version` tetap 1)
 - [x] Upgrade minor rolling (patch dalam satu seri; perpindahan seri ditolak; ADR 0015; Molecule `upgrade` Ubuntu 24.04 dan Rocky 9, `upgrade-podman` 4 image; `standalone` dan `galera` ulang dari VM baru di Ubuntu 24.04 dan Rocky 9)
 - [x] Exporter monitoring (`mysqld_exporter`, `node_exporter` opsional; ADR 0016; Molecule `monitoring` Ubuntu 24.04 dan Rocky 9, `monitoring-podman` 4 image)
-- [ ] Scale in
+- [x] Scale in (ADR 0017; `tera scale-in` + langkah 2 tanpa restart, marker "removed" ditolak semua action; Molecule `scale` Ubuntu 24.04 dan Rocky 9)
 - [ ] `SET GLOBAL` tanpa restart (paling akhir)
 
 Kandidat ADR di luar Fase 4: replikasi async, upgrade major, PITR dari binlog, restore lintas cluster,

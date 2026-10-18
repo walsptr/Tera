@@ -1,0 +1,15 @@
+---
+# Write the stage inventory <eph>/stage-<_se_stage>/inventory: a copy of the Molecule inventory (group_vars,
+# host_vars) whose groups mariadb and loadbalancer are _se_members, in that order. The folder is called
+# "inventory" like Molecule's, so tera_cluster_name stays the same.
+- name: Copy the Molecule inventory for stage {{ _se_stage }}
+  ansible.builtin.copy:
+    src: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/inventory/"
+    dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-{{ _se_stage }}/inventory/"
+    mode: preserve
+
+- name: Write the hosts of stage {{ _se_stage }}
+  ansible.builtin.template:
+    src: stage_inventory.yml.j2
+    dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-{{ _se_stage }}/inventory/ansible_inventory.yml"
+    mode: "0644"

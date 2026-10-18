@@ -1,0 +1,767 @@
+---
+# Scale side effects (docs/TESTING.md, ADR 0017). Stage inventories: "four" (db01-db04) and "three" (db01, db03,
+# db04), both for mariadb and loadbalancer.
+# 1. scale out: db04 joins, 4 HAProxy backends UP;
+# 2. scale-in refusals: CLI without the flag, the writer, the backup host, below mariadb_galera_min_nodes, an
+#    unhealthy cluster;
+# 3. scale in db02 while it holds the VIP, with a writer through the VIP and a probe from the host: db02 out
+#    (marker, MariaDB/Keepalived/HAProxy/socket off and disabled), the VIP on another node, size 3;
+# 4. "forgot to remove it from the inventory": reconfigure and deploy refused, the cluster unchanged;
+# 5. the cluster dies between step 1 and step 2: recover and restore refused; after step 2 recover works;
+# 6. step 2: reconfigure without restart (same start times, no marker), db02 gone from the config, HAProxy,
+#    Keepalived and firewalld (Rocky); --check --diff names the change; a second run is changed=0;
+# 7. re-add db02: refused without flags and with one flag, works with both; the marker is gone;
+# 8. scale in db02 again, step 2 together with another config change: rolling restart;
+# 9. tera destroy with an inventory holding only db02 cleans db02, the cluster is untouched;
+# 10. deploy of the final cluster is changed=0.
+- name: Read the OS of the nodes
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Remember the OS family
+      ansible.builtin.set_fact:
+        _se_os: "{{ ansible_facts['os_family'] }}"
+
+- name: Write the stage inventories
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Write stage four
+      ansible.builtin.include_tasks: tasks/stage.yml
+      vars:
+        _se_stage: four
+        _se_members: [db01, db02, db03, db04]
+
+    - name: Write stage three
+      ansible.builtin.include_tasks: tasks/stage.yml
+      vars:
+        _se_stage: three
+        _se_members: [db01, db03, db04]
+
+- name: Prepare the test client and the writes table
+  hosts: db03
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Write test client credentials
+      ansible.builtin.copy:
+        content: |
+          [client]
+          user = {{ mariadb_admin_user | default('tera_admin') }}
+          password = {{ mariadb_admin_password }}
+        dest: /root/tera-test.cnf
+        mode: "0600"
+      no_log: true
+
+    - name: Copy the writer
+      ansible.builtin.copy:
+        src: ../upgrade/files/writer.sh
+        # /usr/local/sbin, not /root: systemd may not execute admin_home_t files under SELinux (Rocky).
+        dest: /usr/local/sbin/tera-writer.sh
+        mode: "0700"
+
+    - name: Create the writes table
+      ansible.builtin.command:
+        cmd: >-
+          mariadb -e "CREATE TABLE IF NOT EXISTS app.upgrade_writes
+          (id INT AUTO_INCREMENT PRIMARY KEY, ts DATETIME(6) DEFAULT NOW(6), h VARCHAR(32))"
+      changed_when: true
+
+- name: Scale out to db04
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_four: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-four/inventory"
+  tasks:
+    - name: Run deploy with db04
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          expect_success: true
+
+- name: Check the four-node cluster
+  hosts: db01:db02:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the cluster
+      ansible.builtin.include_tasks: tasks/cluster_check.yml
+      vars:
+        _se_size: 4
+        _se_backends: [db01, db02, db03, db04]
+
+- name: Scale-in refusals
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_four: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-four/inventory"
+    _se_scale_in: [-e, tera_action=scale_in, -e, tera_scale_in_confirm=true]
+  tasks:
+    - name: Run the CLI without the confirmation flag
+      ansible.builtin.command:
+        argv:
+          - "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/tera"
+          - scale-in
+          - -i
+          - "{{ _se_four }}/ansible_inventory.yml"
+          - -e
+          - tera_scale_in_host=db02
+      register: _se_cli
+      changed_when: false
+      failed_when: _se_cli.rc == 0 or _se_cli.stderr is not search('--yes-i-really-mean-it')
+
+    - name: Run a refused scale in
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          playbook: playbooks/mariadb-scale-in.yml
+          action: scale_in
+          args: "{{ ['-e', 'tera_scale_in_confirm=true', '-e', 'tera_scale_in_host=' ~ item.host] + item.args | default([]) }}"
+          expect: "{{ item.expect }}"
+      loop:
+        - {host: db01, expect: adalah writer HAProxy}
+        - {host: db04, expect: adalah mariadb_backup_host}
+        - {host: db02, args: [-e, mariadb_galera_min_nodes=4], expect: kurang dari mariadb_galera_min_nodes}
+      loop_control:
+        label: "{{ item.host }}: {{ item.expect }}"
+
+    - name: Stop MariaDB on db03
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: stopped
+      delegate_to: db03
+      become: true
+
+    - name: Run scale in with an unhealthy cluster
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          playbook: playbooks/mariadb-scale-in.yml
+          action: scale_in
+          args: [-e, tera_scale_in_confirm=true, -e, tera_scale_in_host=db02]
+          expect: Scale in hanya berjalan di cluster yang sehat
+
+    - name: Run deploy to bring db03 back
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          expect_success: true
+
+- name: Move the VIP to db02
+  hosts: db01:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    # nopreempt: once db02 holds the VIP it keeps it when the others come back.
+    - name: Stop Keepalived on the other nodes
+      ansible.builtin.systemd_service:
+        name: keepalived
+        state: stopped
+
+    - name: Wait until db02 holds the VIP
+      ansible.builtin.command:
+        cmd: ip -o -4 addr show
+      register: _se_db02_ip
+      delegate_to: db02
+      until: _se_db02_ip.stdout is search('inet ' ~ (tera_vip_address | regex_escape) ~ '/')
+      retries: 30
+      delay: 1
+      changed_when: false
+      run_once: true
+
+    - name: Start Keepalived on the other nodes
+      ansible.builtin.systemd_service:
+        name: keepalived
+        state: started
+
+- name: Scale in db02 under load
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+    _se_four: "{{ _se_eph }}/stage-four/inventory"
+    _se_vip: "{{ hostvars['db01']['tera_vip_address'] }}"
+  tasks:
+    - name: Start the probe from the host
+      ansible.builtin.shell:
+        cmd: >-
+          nohup {{ ansible_playbook_python }} {{ playbook_dir }}/../loadbalancer/files/probe.py {{ _se_vip }} 3306
+          {{ _se_eph }}/probe.log > /dev/null 2>&1 & echo $!
+      register: _se_probe
+      changed_when: true
+
+    - name: Start the writer on db03
+      ansible.builtin.command:
+        cmd: systemd-run --unit=tera-test-writer --collect /usr/local/sbin/tera-writer.sh {{ _se_vip }} /var/log/tera-writer.log
+      delegate_to: db03
+      become: true
+      changed_when: true
+
+    - name: Wait for a steady baseline
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Run tera scale-in for db02
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          playbook: playbooks/mariadb-scale-in.yml
+          action: scale_in
+          args: [-e, tera_scale_in_confirm=true, -e, tera_scale_in_host=db02]
+          expect_success: true
+
+    - name: Assert the next step is shown
+      ansible.builtin.assert:
+        that:
+          - _se_out is search(_se_next)
+      vars:
+        _se_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+        _se_next: "Langkah 2: hapus db02 dari inventory"
+
+    - name: Let the writer run after the scale in
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Stop the writer
+      ansible.builtin.file:
+        path: /root/tera-writer.stop
+        state: touch
+        mode: "0644"
+      delegate_to: db03
+      become: true
+
+    - name: Wait for the writer to stop
+      ansible.builtin.systemd_service:
+        name: tera-test-writer
+      delegate_to: db03
+      become: true
+      register: _se_writer_unit
+      until: _se_writer_unit.status.ActiveState | default('inactive') != 'active'
+      retries: 30
+      delay: 1
+      failed_when: false
+
+    - name: Stop the probe
+      ansible.builtin.command:
+        cmd: kill {{ _se_probe.stdout | trim }}
+      changed_when: true
+
+    - name: Fetch the writer log
+      ansible.builtin.fetch:
+        src: /var/log/tera-writer.log
+        dest: "{{ _se_eph }}/writer.log"
+        flat: true
+      delegate_to: db03
+      become: true
+
+    - name: Summarize probe and writer
+      ansible.builtin.command:
+        cmd: "{{ ansible_playbook_python }} {{ playbook_dir }}/../upgrade/files/check_upgrade.py {{ _se_eph }}/probe.log {{ _se_eph }}/writer.log"
+      register: _se_summary_raw
+      changed_when: false
+
+    - name: Save the numbers
+      ansible.builtin.copy:
+        content: "{{ _se_summary_raw.stdout }}\n"
+        dest: "{{ _se_eph }}/scale-in-results.json"
+        mode: "0644"
+
+    # db02 held the VIP: one VIP move (about 3 VRRP adverts); clients retry, as for a failover.
+    - name: Assert the clients saw short interruptions only
+      ansible.builtin.assert:
+        that:
+          - _sum.probe_lines > 50
+          - _sum.probe_longest_outage_s <= 10
+          - _sum.writer_ok > 50
+          - _sum.writer_fail <= 5
+          - _sum.writer_longest_outage_s <= 10
+        fail_msg: "{{ _se_summary_raw.stdout }}"
+      vars:
+        _sum: "{{ _se_summary_raw.stdout | from_json }}"
+
+- name: Check db02 is out
+  hosts: db02
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the removed marker
+      ansible.builtin.stat:
+        path: /etc/tera/mariadb-removed
+      register: _se_removed
+
+    - name: Read the services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      loop: [mariadb.service, keepalived.service, haproxy.service, tera-clustercheck.socket]
+      register: _se_units
+
+    - name: Read the addresses
+      ansible.builtin.command:
+        cmd: ip -o -4 addr show
+      register: _se_ip
+      changed_when: false
+
+    - name: Assert db02 is out and keeps its data
+      ansible.builtin.assert:
+        that:
+          - _se_removed.stat.exists
+          - _se_units.results | map(attribute='status.ActiveState') | unique == ['inactive']
+          - _se_units.results | map(attribute='status.UnitFileState') | unique == ['disabled']
+          - _se_ip.stdout is not search('inet ' ~ (tera_vip_address | regex_escape) ~ '/')
+        fail_msg: >-
+          {{ _se_units.results | map(attribute='status.ActiveState') | list | to_json }}
+          {{ _se_units.results | map(attribute='status.UnitFileState') | list | to_json }}
+
+    - name: Find the datadir
+      ansible.builtin.stat:
+        path: /var/lib/mysql/app
+      register: _se_app
+
+    - name: Assert the datadir stays
+      ansible.builtin.assert:
+        that:
+          - _se_app.stat.isdir | default(false)
+
+- name: Check the remaining nodes after step 1
+  hosts: db01:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the cluster
+      ansible.builtin.include_tasks: tasks/cluster_check.yml
+      vars:
+        _se_size: 3
+        _se_backends: [db01, db03, db04]
+        _se_down: [db02]
+
+- name: Forgot to remove db02 from the inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_four: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-four/inventory"
+  tasks:
+    - name: Run a refused action with db02 still in the inventory
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          action: "{{ item }}"
+          expect: db02 sudah dikeluarkan dari cluster lewat tera scale-in
+          expect_also: "Langkah 2: hapus db02 dari inventory"
+      loop: [reconfigure, deploy]
+
+- name: Check the cluster did not change
+  hosts: db01:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the cluster
+      ansible.builtin.include_tasks: tasks/cluster_check.yml
+      vars:
+        _se_size: 3
+        _se_backends: [db01, db03, db04]
+        _se_down: [db02]
+
+- name: Cluster down between step 1 and step 2
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_four: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-four/inventory"
+    _se_three: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-three/inventory"
+  tasks:
+    - name: Stop MariaDB on the remaining nodes one by one
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: stopped
+      delegate_to: "{{ item }}"
+      become: true
+      loop: [db04, db03, db01]
+
+    - name: Run recover with db02 still in the inventory
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          playbook: playbooks/mariadb-recover.yml
+          action: recover
+          expect: db02 sudah dikeluarkan dari cluster lewat tera scale-in
+          expect_also: lalu jalankan tera recover lagi. Tera tidak mengecualikan host ini otomatis.
+
+    - name: Run restore with db02 still in the inventory
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          playbook: playbooks/mariadb-restore.yml
+          action: restore
+          args: [-e, tera_restore_confirm=true, -e, mariadb_restore_backup=latest]
+          expect: db02 sudah dikeluarkan dari cluster lewat tera scale-in
+          expect_also: lalu jalankan tera restore lagi.
+
+    - name: Run recover without db02
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_three }}"
+          playbook: playbooks/mariadb-recover.yml
+          action: recover
+          expect_success: true
+
+- name: Remember the start times before step 2
+  hosts: db01:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_before_step2
+
+- name: Step 2
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_three: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-three/inventory"
+  tasks:
+    - name: Run reconfigure --check --diff without db02
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_three }}"
+          action: reconfigure
+          args: [--check, --diff]
+          expect_success: true
+
+    - name: Assert --check names the change without restart
+      ansible.builtin.assert:
+        that:
+          - (_se_out | regex_findall('ditulis tanpa restart \(scale in, ADR 0017\)') | length) == 3
+      vars:
+        _se_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+
+    - name: Run reconfigure without db02
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_three }}"
+          action: reconfigure
+          expect_success: true
+
+    - name: Assert step 2 wrote the config without restart
+      ansible.builtin.assert:
+        that:
+          - (_se_out | regex_findall('ditulis tanpa restart \(scale in, ADR 0017\)') | length) == 3
+      vars:
+        _se_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+
+    - name: Run reconfigure again
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_three }}"
+          action: reconfigure
+          expect_success: true
+
+    - name: Assert the second run changed nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks | to_json }}"
+
+- name: Check the cluster after step 2
+  hosts: db01:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the cluster
+      ansible.builtin.include_tasks: tasks/cluster_check.yml
+      vars:
+        _se_size: 3
+        _se_backends: [db01, db03, db04]
+        _se_gone: [db02]
+
+    - name: Read the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_after_step2
+
+    - name: Read the restart pending marker
+      ansible.builtin.stat:
+        path: /etc/tera/mariadb-restart-pending
+      register: _se_pending
+
+    - name: Read the MariaDB and Keepalived config
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ '/etc/mysql/mariadb.conf.d/99-tera.cnf' if _se_os == 'Debian' else '/etc/my.cnf.d/99-tera.cnf' }}"
+        - /etc/keepalived/keepalived.conf
+      register: _se_configs
+
+    - name: Read firewalld rich rules (Rocky)
+      ansible.builtin.command:
+        cmd: firewall-cmd --list-rich-rules
+      register: _se_rich
+      changed_when: false
+      when: _se_os == 'RedHat'
+
+    - name: Assert no restart and db02 gone from the config
+      ansible.builtin.assert:
+        that:
+          - _se_after_step2.status.ActiveEnterTimestampMonotonic == _se_before_step2.status.ActiveEnterTimestampMonotonic
+          - not _se_pending.stat.exists
+          - (_se_configs.results[0].content | b64decode) is search('wsrep_cluster_address = gcomm://10.77.0.11,10.77.0.13,10.77.0.14\n')
+          - (_se_configs.results[1].content | b64decode) is not search('10\.77\.0\.12')
+          - _se_os != 'RedHat' or _se_rich.stdout is not search('10\.77\.0\.12')
+        fail_msg: "{{ _se_rich.stdout_lines | default([]) | to_json }}"
+
+- name: Re-add db02
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_four: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-four/inventory"
+  tasks:
+    - name: Run a refused re-add
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          args: "{{ item.args }}"
+          expect: "{{ item.expect }}"
+          expect_also: "{{ item.also }}"
+      loop:
+        - args: []
+          expect: db02 sudah dikeluarkan dari cluster lewat tera scale-in
+          also: -e mariadb_scale_in_allow_readd=true
+        - args: [-e, mariadb_scale_in_allow_readd=true]
+          expect: salinan lama dari sebelum node dikeluarkan
+          also: -e mariadb_scale_in_allow_readd=true -e mariadb_galera_allow_sst_overwrite=true
+        - args: [-e, mariadb_galera_allow_sst_overwrite=true]
+          expect: db02 sudah dikeluarkan dari cluster lewat tera scale-in
+          also: mariadb_galera_allow_sst_overwrite=true jika datadir-nya masih berisi database
+      loop_control:
+        label: "{{ item.args | join(' ') or 'tanpa flag' }}"
+
+    - name: Run the re-add with both flags
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_four }}"
+          args: [-e, mariadb_scale_in_allow_readd=true, -e, mariadb_galera_allow_sst_overwrite=true]
+          expect_success: true
+
+- name: Check db02 is back
+  hosts: db01:db02:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the cluster
+      ansible.builtin.include_tasks: tasks/cluster_check.yml
+      vars:
+        _se_size: 4
+        _se_backends: [db01, db02, db03, db04]
+
+    - name: Read the removed marker
+      ansible.builtin.stat:
+        path: /etc/tera/mariadb-removed
+      register: _se_removed_after
+
+    - name: Read the load balancer services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      loop: [keepalived.service, haproxy.service]
+      register: _se_lb_units
+
+    - name: Assert db02 is a member again
+      ansible.builtin.assert:
+        that:
+          - not _se_removed_after.stat.exists
+          - _se_lb_units.results | map(attribute='status.ActiveState') | unique == ['active']
+
+- name: Scale in db02 again with another config change
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
+    - name: Run tera scale-in for db02
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_eph }}/stage-four/inventory"
+          playbook: playbooks/mariadb-scale-in.yml
+          action: scale_in
+          args: [-e, tera_scale_in_confirm=true, -e, tera_scale_in_host=db02]
+          expect_success: true
+
+- name: Remember the start times before step 2 with a config change
+  hosts: db01:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_before_change
+
+- name: Step 2 with another config change
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
+    - name: Add a custom config change
+      ansible.builtin.copy:
+        content: |
+          [mysqld]
+          net_read_timeout = 45
+        dest: "{{ _se_eph }}/config/mariadb/zz-scale.cnf"
+        mode: "0644"
+
+    - name: Run reconfigure without db02 and with the config change
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_eph }}/stage-three/inventory"
+          action: reconfigure
+          expect_success: true
+
+    - name: Assert the exception did not apply
+      ansible.builtin.assert:
+        that:
+          - _se_run.stdout is not search('ditulis tanpa restart')
+
+- name: Check the rolling restart
+  hosts: db01:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _se_after_change
+
+    # Not max_connections: db01 has its own value in config/mariadb/db01/host.cnf (host config wins).
+    - name: Read net_read_timeout
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT @@net_read_timeout"
+      register: _se_maxconn
+      changed_when: false
+
+    - name: Read the restart pending marker
+      ansible.builtin.stat:
+        path: /etc/tera/mariadb-restart-pending
+      register: _se_pending_change
+
+    - name: Assert every remaining node restarted with the new config
+      ansible.builtin.assert:
+        that:
+          - _se_after_change.status.ActiveEnterTimestampMonotonic != _se_before_change.status.ActiveEnterTimestampMonotonic
+          - _se_maxconn.stdout == '45'
+          - not _se_pending_change.stat.exists
+
+    - name: Check the cluster
+      ansible.builtin.include_tasks: tasks/cluster_check.yml
+      vars:
+        _se_size: 3
+        _se_backends: [db01, db03, db04]
+        _se_gone: [db02]
+
+- name: Clean up db02 with a single-host inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_eph: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}"
+  tasks:
+    - name: Write stage db02
+      ansible.builtin.include_tasks: tasks/stage.yml
+      vars:
+        _se_stage: db02
+        _se_members: [db02]
+
+    - name: Run tera destroy for db02 only
+      ansible.builtin.command:
+        argv:
+          - "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/tera"
+          - destroy
+          - -i
+          - "{{ _se_eph }}/stage-db02/inventory/ansible_inventory.yml"
+          - --yes-i-really-really-mean-it
+      register: _se_destroy_db02
+      changed_when: true
+
+    - name: Assert destroy succeeded
+      ansible.builtin.assert:
+        that:
+          - _se_destroy_db02.rc == 0
+        fail_msg: "{{ _se_destroy_db02.stdout_lines[-30:] | to_json }}"
+
+- name: Check db02 is clean
+  hosts: db02
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Look for Tera files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/tera
+        - /var/lib/mysql
+        - /etc/haproxy/haproxy.cfg
+        - /etc/keepalived/keepalived.conf
+        - /etc/systemd/system/tera-clustercheck.socket
+      register: _se_db02_files
+
+    - name: Assert db02 is clean
+      ansible.builtin.assert:
+        that:
+          - _se_db02_files.results | selectattr('stat.exists') | list | length == 0
+        fail_msg: "{{ _se_db02_files.results | selectattr('stat.exists') | map(attribute='item') | list | to_json }}"
+
+- name: Check the cluster after the cleanup of db02
+  hosts: db01:db03:db04
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the cluster
+      ansible.builtin.include_tasks: tasks/cluster_check.yml
+      vars:
+        _se_size: 3
+        _se_backends: [db01, db03, db04]
+        _se_gone: [db02]
+
+- name: Final idempotence
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _se_three: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/stage-three/inventory"
+  tasks:
+    - name: Run deploy of the final cluster
+      ansible.builtin.include_tasks: ../shared/tasks/tera_run.yml
+      vars:
+        _se_case:
+          inventory: "{{ _se_three }}"
+          expect_success: true
+
+    - name: Assert deploy changed nothing
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks | to_json }}"

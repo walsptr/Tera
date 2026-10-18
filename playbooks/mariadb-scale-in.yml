@@ -1,0 +1,95 @@
+---
+# tera scale-in step 1 (docs/decisions/0017-galera-scale-in.md): take tera_scale_in_host out of the Galera
+# cluster. Step 2 is the operator's: remove the host from the inventory, then tera reconfigure (no restart of
+# the remaining nodes when only wsrep_cluster_address shrinks).
+- name: Confirm scale in
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - tera_scale_in_confirm | default(false) | bool
+          - tera_scale_in_host | default('') | length > 0
+        fail_msg: >-
+          Scale in mengeluarkan node dari cluster. Jalankan lewat: ./tera scale-in -i inventory/<cluster>
+          -e tera_scale_in_host=<host> --yes-i-really-mean-it
+        quiet: true
+
+- name: Gather facts for scale in
+  hosts: mariadb:loadbalancer
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Set tera_listen_address
+      ansible.builtin.include_tasks: tasks/listen_address.yml
+
+- name: Scale-in prechecks
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run scale-in prechecks
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: scale_in_prechecks.yml
+
+- name: Take the node out of the cluster
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Run scale in
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: scale_in.yml
+      when:
+        - inventory_hostname == tera_scale_in_host
+        - not ansible_check_mode
+
+- name: Check the remaining nodes
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: tera_defaults
+  tasks:
+    - name: Wait for the remaining nodes to be Synced
+      ansible.builtin.include_role:
+        name: mariadb
+        tasks_from: wait_synced.yml
+      when: inventory_hostname != tera_scale_in_host
+
+    - name: Read the cluster size
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SHOW GLOBAL STATUS LIKE 'wsrep_cluster_size'"
+      register: _scale_in_size
+      changed_when: false
+      check_mode: false
+      until: (_scale_in_size.stdout.split() | last | default('0') | int) == (groups['mariadb'] | length) - 1
+      retries: 30
+      delay: 2
+      when:
+        - inventory_hostname != tera_scale_in_host
+        - not ansible_check_mode
+
+    - name: Show the next step
+      ansible.builtin.debug:
+        msg: >-
+          {{ tera_scale_in_host }} sudah keluar dari cluster (wsrep_cluster_size {{ (groups['mariadb'] | length) - 1 }}).
+          Langkah 2: hapus {{ tera_scale_in_host }} dari inventory (hosts.yml, group mariadb{{ ' dan loadbalancer'
+          if tera_scale_in_host in (groups['loadbalancer'] | default([])) else '' }}), lalu jalankan
+          ./tera reconfigure -i inventory/<cluster>. Setelah itu matikan server itu, atau bersihkan dengan tera destroy
+          memakai inventory sementara yang hanya berisi host itu (README, bagian Scale in).
+      run_once: true

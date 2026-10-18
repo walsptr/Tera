@@ -26,6 +26,9 @@ mariadb_galera_marker: "{{ tera_state_dir }}/mariadb-galera.bootstrapped"
 # Datadir marker: written once the datadir was initialized; with the marker, an empty datadir fails
 # deploy (missing mount) instead of being initialized again.
 mariadb_datadir_marker: "{{ tera_state_dir }}/mariadb-datadir.initialized"
+# Removed marker (ADR 0017): written by tera scale-in on the host it took out of the cluster. Every
+# action refuses a host in the inventory that has it (step 2: remove the host from the inventory).
+mariadb_removed_marker: "{{ tera_state_dir }}/mariadb-removed"
 
 # --- Network ----------------------------------------------------------------
 # Interface used to derive tera_listen_address when host var `ip` is not set.

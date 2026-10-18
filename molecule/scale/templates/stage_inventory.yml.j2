@@ -1,0 +1,23 @@
+# Scale stage inventory (test only): every Molecule platform, groups mariadb and loadbalancer = {{ _se_members | join(', ') }}.
+{% macro conn(h) %}
+      ansible_connection: ssh
+      ansible_host: {{ hostvars[h]['ansible_host'] }}
+      ansible_port: {{ hostvars[h]['ansible_port'] }}
+      ansible_user: {{ hostvars[h]['ansible_user'] }}
+      ansible_private_key_file: {{ hostvars[h]['ansible_private_key_file'] }}
+      ansible_ssh_common_args: "{{ hostvars[h]['ansible_ssh_common_args'] }}"
+{% endmacro %}
+all:
+  hosts:
+{% for h in groups['all'] | reject('equalto', 'localhost') | sort %}
+    {{ h }}:
+{{ conn(h) -}}
+{% endfor %}
+  children:
+{% for g in ['mariadb', 'loadbalancer'] %}
+    {{ g }}:
+      hosts:
+{% for h in _se_members %}
+        {{ h }}:
+{% endfor %}
+{% endfor %}

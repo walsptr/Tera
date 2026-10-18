@@ -5,12 +5,13 @@
 #   action: deploy (default) | reconfigure | ...    (-e tera_action=..., ignored for other playbooks)
 #   playbook: site.yml (default) | playbooks/mariadb-recover.yml
 #   args: [...]                extra ansible-playbook arguments
+#   inventory: <path>          instead of the Molecule inventory (e.g. a scale stage)
 #   expect_success: true       or: expect / expect_also = text the failed run must print
 - name: Run Tera playbook {{ _se_case.playbook | default('site.yml') }}
   ansible.builtin.command:
     argv: >-
       {{ ['ansible-playbook',
-          '-i', lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/inventory',
+          '-i', _se_case.inventory | default(lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/inventory'),
           lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') ~ '/' ~ (_se_case.playbook | default('site.yml')),
           '-e', 'tera_action=' ~ (_se_case.action | default('deploy'))] + (_se_case.args | default([])) }}
   environment:

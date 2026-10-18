@@ -27,26 +27,36 @@
         path: /usr/sbin/policy-rc.d
         state: absent
 
-- name: Check for a leftover upgrade lock holder
+# tera upgrade and tera scale-in (ADR 0017) hold the backup lock through a transient unit.
+- name: Check for a leftover lock holder
   ansible.builtin.systemd_service:
-    name: tera-mariadb-upgrade-lock.service
-  register: _mariadb_upgrade_lock_unit
+    name: "{{ item }}"
+  loop:
+    - tera-mariadb-upgrade-lock.service
+    - tera-mariadb-scale-in-lock.service
+  register: _mariadb_upgrade_lock_units
   failed_when: false
   check_mode: false
 
-- name: Release a leftover upgrade lock holder
-  when: (_mariadb_upgrade_lock_unit.status | default({})).ActiveState | default('') in ['active', 'activating']
-  block:
-    - name: Warn about the leftover lock holder
-      ansible.builtin.debug:
-        msg: >-
-          PERINGATAN: {{ inventory_hostname }} masih memegang lock backup dari tera upgrade yang terputus
-          (tera-mariadb-upgrade-lock.service); backup terjadwal tertahan. Lock dilepas sekarang.
+- name: Warn about a leftover lock holder
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: {{ inventory_hostname }} masih memegang lock backup dari
+      {{ 'tera upgrade' if 'upgrade' in item.item else 'tera scale-in' }} yang terputus ({{ item.item }}); backup
+      terjadwal tertahan. Lock dilepas sekarang.
+  loop: "{{ _mariadb_upgrade_lock_units.results | selectattr('status', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.status.ActiveState | default('') in ['active', 'activating']
 
-    - name: Stop the leftover lock holder
-      ansible.builtin.systemd_service:
-        name: tera-mariadb-upgrade-lock.service
-        state: stopped
+- name: Stop a leftover lock holder
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    state: stopped
+  loop: "{{ _mariadb_upgrade_lock_units.results | selectattr('status', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.status.ActiveState | default('') in ['active', 'activating']
 
 - name: Check the clustercheck socket
   ansible.builtin.systemd_service:

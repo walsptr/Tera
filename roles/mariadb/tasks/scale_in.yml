@@ -1,0 +1,148 @@
+---
+# tera scale-in step 1 (ADR 0017) on tera_scale_in_host, after scale_in_prechecks.yml passed on every node.
+# Under the backup lock: drain -> backup timers off -> (load balancer) Keepalived off, the VIP moves, HAProxy
+# off -> MariaDB stopped and disabled -> removed marker. Datadir, packages and config stay.
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Take this node out of the cluster
+  block:
+    # Like tera upgrade (ADR 0015): a transient unit holds mariadb_backup_lock, so no backup runs meanwhile.
+    - name: Take the backup lock
+      ansible.builtin.command:
+        argv:
+          - systemd-run
+          - --unit=tera-mariadb-scale-in-lock
+          - --collect
+          - --property=ExecStopPost=/bin/rm -f /run/tera-mariadb-scale-in-lock.held
+          - flock
+          - -w
+          - "{{ mariadb_backup_lock_timeout }}"
+          - -E
+          - "75"
+          - "{{ mariadb_backup_lock }}"
+          - sh
+          - -c
+          - "touch /run/tera-mariadb-scale-in-lock.held && exec sleep {{ mariadb_backup_lock_timeout }}"
+      changed_when: true
+
+    - name: Wait for the backup lock
+      ansible.builtin.stat:
+        path: /run/tera-mariadb-scale-in-lock.held
+      register: _mariadb_scale_in_lock_held
+      until: _mariadb_scale_in_lock_held.stat.exists
+      retries: "{{ (mariadb_backup_lock_timeout | int / 5) | int + 1 }}"
+      delay: 5
+      failed_when: false
+
+    - name: Check the backup lock was taken
+      ansible.builtin.assert:
+        that:
+          - _mariadb_scale_in_lock_held.stat.exists
+        fail_msg: >-
+          {{ inventory_hostname }}: lock backup {{ mariadb_backup_lock }} tidak didapat dalam
+          {{ mariadb_backup_lock_timeout }} detik (backup masih berjalan; lihat systemctl status 'tera-backup@*').
+          Node ini belum disentuh; ulangi tera scale-in setelah backup selesai.
+        quiet: true
+
+    - name: Drain the node (stop tera-clustercheck)
+      ansible.builtin.systemd_service:
+        name: tera-clustercheck.socket
+        state: stopped
+        enabled: false
+
+    - name: Wait until HAProxy marks the node DOWN
+      ansible.builtin.include_tasks: upgrade_lb_wait.yml
+      vars:
+        _mariadb_lb_wait_for: down
+      when: tera_lb_enabled | bool
+
+    - name: Stop the backup timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - tera-backup-full.timer
+        - tera-backup-incremental.timer
+      failed_when: false
+
+    - name: Hand over the VIP and stop the load balancer
+      when:
+        - tera_lb_enabled | bool
+        - inventory_hostname in (groups['loadbalancer'] | default([]))
+      block:
+        # Keepalived first: on stop it releases the VIP and another node (BACKUP, nopreempt) takes it over.
+        - name: Stop Keepalived
+          ansible.builtin.systemd_service:
+            name: keepalived
+            state: stopped
+            enabled: false
+
+        - name: Wait until the VIP answers from another load balancer
+          ansible.builtin.wait_for:
+            host: "{{ tera_vip_address }}"
+            port: "{{ mariadb_port }}"
+            timeout: 60
+
+        - name: Find the VIP holder
+          ansible.builtin.command:
+            cmd: ip -o -4 addr show
+          register: _mariadb_scale_in_vip
+          changed_when: false
+          check_mode: false
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['loadbalancer'] }}"
+
+        - name: Check exactly one other load balancer holds the VIP
+          ansible.builtin.assert:
+            that:
+              - _holders | length == 1
+              - inventory_hostname not in _holders
+            fail_msg: >-
+              VIP {{ tera_vip_address }} setelah Keepalived di {{ inventory_hostname }} dihentikan dipegang oleh:
+              {{ _holders | join(', ') or 'tidak ada' }} (harus tepat satu node load balancer lain). Periksa Keepalived di
+              node load balancer lain.
+            quiet: true
+          vars:
+            _holders: >-
+              {{ _mariadb_scale_in_vip.results
+                 | selectattr('stdout', 'search', 'inet ' ~ (tera_vip_address | regex_escape) ~ '/')
+                 | map(attribute='item') | list }}
+
+        - name: Stop HAProxy
+          ansible.builtin.systemd_service:
+            name: haproxy
+            state: stopped
+            enabled: false
+
+    - name: Stop MariaDB
+      ansible.builtin.systemd_service:
+        name: "{{ _mariadb_service }}"
+        state: stopped
+        enabled: false
+
+    - name: Write the removed marker
+      ansible.builtin.copy:
+        content: |
+          Removed from Galera cluster {{ mariadb_galera_cluster_name }} by tera scale-in (ADR 0017).
+          removed_at: {{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}
+          Remove this host from the inventory (step 2), or re-add it with tera deploy -e mariadb_scale_in_allow_readd=true.
+        dest: "{{ mariadb_removed_marker }}"
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+
+    # deploy, reconfigure, upgrade, recover and restore rely on it: make it durable.
+    - name: Flush the removed marker to disk
+      ansible.builtin.command:
+        cmd: sync
+      changed_when: false
+
+  always:
+    - name: Release the backup lock
+      ansible.builtin.systemd_service:
+        name: tera-mariadb-scale-in-lock.service
+        state: stopped
+      failed_when: false

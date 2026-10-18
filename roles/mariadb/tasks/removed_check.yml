@@ -1,0 +1,30 @@
+---
+# ADR 0017: a host taken out by tera scale-in keeps its data and its galera marker, so any action that starts
+# MariaDB there would join it again. Every action refuses it (never skipped automatically); only deploy adds it
+# back, with mariadb_scale_in_allow_readd. _mariadb_removed_action: deploy | reconfigure | prechecks | upgrade |
+# recover | restore | scale_in.
+- name: Check the scale-in removed marker
+  ansible.builtin.stat:
+    path: "{{ mariadb_removed_marker }}"
+  register: _mariadb_removed_stat
+  check_mode: false
+
+- name: Remember whether this host was removed by tera scale-in
+  ansible.builtin.set_fact:
+    _mariadb_removed: "{{ _mariadb_removed_stat.stat.exists | bool }}"
+
+- name: Refuse a host removed by tera scale-in
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} sudah dikeluarkan dari cluster lewat tera scale-in (marker {{ mariadb_removed_marker }}).
+      {% if _mariadb_removed_action in ['recover', 'restore'] %}Hapus {{ inventory_hostname }} dari inventory
+      (hosts.yml, group mariadb{{ ' dan loadbalancer' if inventory_hostname in (groups['loadbalancer'] | default([])) else '' }};
+      langkah 2 scale in), lalu jalankan tera {{ _mariadb_removed_action }} lagi. Tera tidak mengecualikan host ini
+      otomatis.{% else %}Langkah 2: hapus {{ inventory_hostname }} dari inventory (hosts.yml, group
+      mariadb{{ ' dan loadbalancer' if inventory_hostname in (groups['loadbalancer'] | default([])) else '' }}), lalu
+      jalankan ./tera reconfigure -i inventory/<cluster>. Untuk menambahkannya kembali sebagai node baru: ./tera deploy
+      -i inventory/<cluster> -e mariadb_scale_in_allow_readd=true (ditambah -e mariadb_galera_allow_sst_overwrite=true
+      jika datadir-nya masih berisi database: data itu salinan lama dari sebelum node dikeluarkan).{% endif %}
+  when:
+    - _mariadb_removed | bool
+    - not (_mariadb_removed_action == 'deploy' and (mariadb_scale_in_allow_readd | bool))

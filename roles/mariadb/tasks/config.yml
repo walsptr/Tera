@@ -80,6 +80,79 @@
   when: mariadb_cluster_mode == 'galera'
   no_log: true
 
+# ADR 0017 (narrow exception to ADR 0009): when the only change is addresses removed from
+# wsrep_cluster_address (order kept) and this node already sees the smaller cluster (Primary, size = the
+# mariadb nodes in the inventory), the config is written without marker and without restart: the address
+# list is only read when a node starts or joins. Anything else follows ADR 0009.
+- name: Reset the scale-in exception
+  ansible.builtin.set_fact:
+    _mariadb_scale_in_no_restart: false
+
+- name: Check for a wsrep_cluster_address that only lost nodes
+  when:
+    - mariadb_cluster_mode == 'galera'
+    - _mariadb_cnf_check is changed
+    - not (_mariadb_sst_cnf_check is changed)
+  block:
+    - name: Read the current 99-tera.cnf
+      ansible.builtin.slurp:
+        src: "{{ _mariadb_config_dir }}/99-tera.cnf"
+      register: _mariadb_cnf_current
+      failed_when: false
+      check_mode: false
+
+    - name: Compare the cluster addresses
+      ansible.builtin.set_fact:
+        _mariadb_cnf_only_removed: >-
+          {{ (_old_lines | reject('match', _re) | list) == (_new_lines | reject('match', _re) | list)
+             and (_new_addrs | length) < (_old_addrs | length)
+             and (_old_addrs | select('in', _new_addrs) | list) == _new_addrs }}
+      vars:
+        _re: '^wsrep_cluster_address\s*='
+        _old_lines: "{{ (_mariadb_cnf_current.content | default('') | b64decode).splitlines() }}"
+        _new_lines: "{{ _mariadb_cnf.splitlines() }}"
+        _old_addrs: "{{ (_old_lines | select('match', _re) | first | default('') | split('gcomm://') | last).split(',') }}"
+        _new_addrs: "{{ (_new_lines | select('match', _re) | first | default('') | split('gcomm://') | last).split(',') }}"
+
+    - name: Read the cluster view
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_cluster_status', 'wsrep_cluster_size')"
+      register: _mariadb_scale_in_view
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _mariadb_cnf_only_removed | bool
+
+    - name: Decide whether the scale-in exception applies
+      ansible.builtin.set_fact:
+        _mariadb_scale_in_no_restart: >-
+          {{ (_mariadb_cnf_only_removed | bool)
+             and (_mariadb_scale_in_view.rc | default(1)) == 0
+             and _view.wsrep_cluster_status | default('') == 'Primary'
+             and (_view.wsrep_cluster_size | default('0') | int) == (groups['mariadb'] | length) }}
+      vars:
+        _view: "{{ dict((_mariadb_scale_in_view.stdout_lines | default([])) | map('split')) }}"
+
+    - name: Show the config change without restart (scale in)
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: wsrep_cluster_address hanya kehilangan node yang sudah keluar dari cluster:
+          99-tera.cnf ditulis tanpa restart (scale in, ADR 0017).
+      when: _mariadb_scale_in_no_restart | bool
+
+    - name: Warn that a removed node is still in the cluster
+      ansible.builtin.debug:
+        msg: >-
+          PERINGATAN: {{ inventory_hostname }}: node dihapus dari wsrep_cluster_address, tetapi cluster masih berisi
+          {{ _view.wsrep_cluster_size | default('?') }} node (inventory: {{ groups['mariadb'] | length }}). Node itu belum
+          dikeluarkan lewat tera scale-in; config ini mengikuti ADR 0009 (restart pending marker dan rolling restart).
+          Keluarkan node itu dengan ./tera scale-in sebelum menghapusnya dari inventory.
+      vars:
+        _view: "{{ dict((_mariadb_scale_in_view.stdout_lines | default([])) | map('split')) }}"
+      when:
+        - _mariadb_cnf_only_removed | bool
+        - not (_mariadb_scale_in_no_restart | bool)
+
 # Written BEFORE the config so an interrupted run still restarts next time (ADR 0009).
 # Not a handler: it must run before the next task. Not written in --check (task runs in check mode).
 - name: Write restart pending marker # noqa: no-handler
@@ -89,7 +162,7 @@
     owner: root
     group: mysql
     mode: "0640"
-  when: (_mariadb_cnf_check is changed) or (_mariadb_sst_cnf_check is changed)
+  when: ((_mariadb_cnf_check is changed) and not (_mariadb_scale_in_no_restart | bool)) or (_mariadb_sst_cnf_check is changed)
   register: _mariadb_marker_write
 
 # The marker must reach the disk before the new config does: after a power loss, a new config
@@ -138,6 +211,6 @@
   ansible.builtin.set_fact:
     mariadb_restart_required: >-
       {{ (mariadb_restart_required | default(false) | bool)
-         or (_mariadb_cnf_result is changed)
+         or ((_mariadb_cnf_result is changed) and not (_mariadb_scale_in_no_restart | bool))
          or (_mariadb_sst_cnf_result is changed)
          or _mariadb_restart_marker_stat.stat.exists }}

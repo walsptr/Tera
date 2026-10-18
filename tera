@@ -5,6 +5,7 @@ set -euo pipefail
 TERA_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PASSWORD_LENGTH=32
 DESTROY_FLAG="--yes-i-really-really-mean-it"
+SCALE_IN_FLAG="--yes-i-really-mean-it"
 
 usage() {
   cat <<EOF
@@ -20,6 +21,9 @@ Commands:
   upgrade     -i <cluster> -e mariadb_upgrade_to=<X.Y.Z|latest> [args]
                                      Rolling patch upgrade within mariadb_version (galera: one node at a
                                      time, writer last). --check shows the plan only
+  scale-in    -i <cluster> -e tera_scale_in_host=<host> ${SCALE_IN_FLAG} [args]
+                                     Take a Galera node out of the cluster (step 1; ADR 0017). Step 2: remove
+                                     the host from the inventory, then tera reconfigure
   backup      -i <cluster> [--incremental] [args]
                                      Take a backup now on mariadb_backup_host (default full)
   backup-verify -i <cluster> [args]  Unpack, prepare and check the latest backup
@@ -178,14 +182,14 @@ main() {
       cmd_new_cluster "$@"
       return 0
       ;;
-    genpwd | prechecks | deploy | reconfigure | recover | upgrade | destroy | backup | backup-verify | backup-status | restore) ;;
+    genpwd | prechecks | deploy | reconfigure | recover | upgrade | scale-in | destroy | backup | backup-verify | backup-status | restore) ;;
     *)
       usage >&2
       die "perintah tidak dikenal: $cmd"
       ;;
   esac
 
-  local target="" confirm=false keep_data=false incremental=false
+  local target="" confirm=false scale_in_confirm=false keep_data=false incremental=false
   local extra=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -196,6 +200,10 @@ main() {
         ;;
       "$DESTROY_FLAG")
         confirm=true
+        shift
+        ;;
+      "$SCALE_IN_FLAG")
+        scale_in_confirm=true
         shift
         ;;
       --keep-data)
@@ -239,6 +247,10 @@ main() {
       ;;
     upgrade)
       run_playbook playbooks/mariadb-upgrade.yml -e tera_action=upgrade ${extra[@]+"${extra[@]}"}
+      ;;
+    scale-in)
+      $scale_in_confirm || die "scale-in mengeluarkan node dari cluster. Ulangi dengan flag $SCALE_IN_FLAG jika yakin."
+      run_playbook playbooks/mariadb-scale-in.yml -e tera_action=scale_in -e tera_scale_in_confirm=true ${extra[@]+"${extra[@]}"}
       ;;
     backup)
       local type=full

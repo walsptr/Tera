@@ -66,6 +66,15 @@
       ansible.builtin.include_tasks: wait_synced.yml
       when: not _mariadb_wsrep_primary
 
+    # ADR 0017: a node re-added with mariadb_scale_in_allow_readd is a member again once Synced.
+    - name: Remove the scale-in removed marker of a re-added node
+      ansible.builtin.file:
+        path: "{{ mariadb_removed_marker }}"
+        state: absent
+      when:
+        - not _mariadb_wsrep_primary
+        - _mariadb_removed | default(false) | bool
+
 - name: Enable MariaDB at boot
   ansible.builtin.systemd_service:
     name: "{{ _mariadb_service }}"

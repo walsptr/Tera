@@ -93,14 +93,16 @@
   ansible.builtin.debug:
     msg: >-
       PERINGATAN: {{ inventory_hostname }}: mariadb_client_sources membatasi sumber ({{ mariadb_client_sources | join(', ') }}),
-      tetapi firewalld {{ 'tidak berjalan' if _mariadb_fw_managed | bool else 'tidak dikelola Tera' }} di host ini:
+      tetapi firewalld
+      {{ 'tidak berjalan' if ((tera_manage_firewall | bool) and (mariadb_firewall_manage | bool)) else 'tidak dikelola Tera' }}
+      di host ini:
       sources tidak ditegakkan, port {{ mariadb_port }} terbuka untuk siapa saja yang bisa menjangkau host ini.
       Batasi lewat firewall jaringan atau ufw (README, bagian Keamanan), atau jalankan firewalld.
   when:
     - "'0.0.0.0/0' not in mariadb_client_sources"
-    - not (_mariadb_fw_managed | bool) or (ansible_facts['services']['firewalld.service']['state'] | default('')) != 'running'
-  vars:
-    _mariadb_fw_managed: "{{ (tera_manage_firewall | bool) and (mariadb_firewall_manage | bool) }}"
+    - >-
+      not ((tera_manage_firewall | bool) and (mariadb_firewall_manage | bool))
+      or (ansible_facts['services']['firewalld.service']['state'] | default('')) != 'running'
 
 - name: Check ufw status
   ansible.builtin.command:
@@ -187,6 +189,12 @@
   no_log: true
   when: mariadb_cluster_mode == 'galera'
 
+# ADR 0017: hosts removed by tera scale-in (deploy, reconfigure, prechecks, upgrade).
+- name: Refuse hosts removed by tera scale-in
+  ansible.builtin.include_tasks: removed_check.yml
+  vars:
+    _mariadb_removed_action: "{{ tera_action }}"
+
 # SST overwrites the joiner datadir. A node that will receive an SST without the bootstrap marker
 # must not hold user databases (docs/GALERA-LIFECYCLE.md, "Prasyarat deploy"). Filesystem level,
 # so it works while MariaDB is stopped. The bootstrap host of a fresh cluster is the SST source.
@@ -204,7 +212,8 @@
         _mariadb_sst_receiver: >-
           {{ ((not _galera_cluster_alive) and (not _galera_ever_bootstrapped)
               and (inventory_hostname != mariadb_bootstrap_host))
-             or (_galera_cluster_alive and (not _mariadb_wsrep_primary) and (not _mariadb_bootstrapped_marker)) }}
+             or (_galera_cluster_alive and (not _mariadb_wsrep_primary)
+                 and ((not _mariadb_bootstrapped_marker) or (_mariadb_removed | bool))) }}
 
     - name: Find databases in the datadir
       ansible.builtin.find:
@@ -214,6 +223,25 @@
       register: _mariadb_datadir_dirs
       check_mode: false
       when: _mariadb_sst_receiver | bool
+
+    # ADR 0017: a re-added node keeps its galera marker, but its data is an old copy.
+    - name: Refuse to re-add a node whose datadir still holds databases
+      ansible.builtin.fail:
+        msg: >-
+          {{ inventory_hostname }} dikeluarkan lewat tera scale-in dan sekarang ditambahkan kembali; SST saat join
+          menimpa {{ mariadb_datadir }} yang masih berisi database: {{ _mariadb_user_databases | join(', ') }}. Data itu
+          salinan lama dari sebelum node dikeluarkan (data terbaru ada di cluster). Backup atau pindahkan dulu jika masih
+          dibutuhkan, lalu ulangi dengan kedua flag: -e mariadb_scale_in_allow_readd=true
+          -e mariadb_galera_allow_sst_overwrite=true.
+      vars:
+        _mariadb_user_databases: >-
+          {{ _mariadb_datadir_dirs.files | map(attribute='path') | map('basename')
+             | reject('in', ['mysql', 'performance_schema', 'sys']) | sort | list }}
+      when:
+        - _mariadb_sst_receiver | bool
+        - _mariadb_removed | bool
+        - _mariadb_user_databases | length > 0
+        - not (mariadb_galera_allow_sst_overwrite | bool)
 
     - name: Refuse an SST that would overwrite user databases
       ansible.builtin.fail:
@@ -231,5 +259,6 @@
              | reject('in', ['mysql', 'performance_schema', 'sys']) | sort | list }}
       when:
         - _mariadb_sst_receiver | bool
+        - not (_mariadb_removed | bool)
         - _mariadb_user_databases | length > 0
         - not (mariadb_galera_allow_sst_overwrite | bool)

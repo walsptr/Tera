@@ -1,0 +1,36 @@
+---
+# On a remaining node: Synced, wsrep_cluster_size _se_size, and in this node's HAProxy (every node is a load
+# balancer) the backends _se_backends UP, _se_down DOWN (taken out, still configured) and _se_gone absent.
+- name: Wait for this node to be Synced with the expected size
+  ansible.builtin.command:
+    cmd: mariadb -N -B -e "SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_local_state', 'wsrep_cluster_size')"
+  register: _se_wsrep
+  until:
+    - _se_wsrep.rc == 0
+    - (_se_wsrep.stdout_lines | map('split') | map('join', '=') | list | sort) == (['wsrep_cluster_size=' ~ _se_size, 'wsrep_local_state=4'])
+  retries: 60
+  delay: 2
+  changed_when: false
+
+- name: Wait for the HAProxy backends
+  ansible.builtin.uri:
+    url: "http://{{ ip }}:8404/;csv"
+    url_username: tera
+    url_password: "{{ haproxy_stats_password }}"
+    force_basic_auth: true
+    return_content: true
+  register: _se_stats
+  until: >-
+    _se_stats.status | default(0) == 200
+    and (_rows | selectattr('0', 'in', _se_backends) | selectattr('1', 'equalto', 'UP') | list | length) == (_se_backends | length)
+    and (_rows | selectattr('0', 'in', _se_down | default([])) | rejectattr('1', 'match', '^DOWN') | list | length) == 0
+    and (_rows | selectattr('0', 'in', _se_down | default([])) | list | length) == (_se_down | default([]) | length)
+    and (_rows | selectattr('0', 'in', _se_gone | default([])) | list | length) == 0
+  retries: 60
+  delay: 2
+  vars:
+    # [server, status] of the backend "mariadb" rows (CSV column 2 and 18).
+    _rows: >-
+      {{ (_se_stats.content | default('')).splitlines() | select('match', '^mariadb,')
+         | reject('match', '^mariadb,(FRONTEND|BACKEND),')
+         | map('regex_findall', '^mariadb,([^,]*),(?:[^,]*,){15}([^,]*),') | map('first') | list }}

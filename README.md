@@ -157,6 +157,44 @@ Jika semua node mati (listrik padam, crash), dua hal bisa terjadi:
   Untuk memaksa node tertentu: `./tera recover -i inventory/prod-b -e mariadb_recover_from=db02`.
   **Hati-hati**: memaksa node dengan data lebih lama menghilangkan transaksi yang lebih baru.
 
+## Scale out dan scale in (Galera)
+
+**Scale out:** tambahkan host ke `hosts.yml` (group `mariadb`, dan `loadbalancer` jika perlu), lalu
+`./tera deploy -i inventory/prod-b`. Node baru join lewat SST; node lama di-rolling restart karena
+`wsrep_cluster_address` berubah.
+
+**Scale in** dua langkah (ADR 0017):
+
+```bash
+# Langkah 1: keluarkan db02 dari cluster (drain dari HAProxy, lepas VIP jika db02 load balancer, stop MariaDB)
+./tera scale-in -i inventory/prod-b -e tera_scale_in_host=db02 --yes-i-really-mean-it
+
+# Langkah 2: hapus db02 dari hosts.yml (group mariadb, dan loadbalancer jika ada), lalu:
+./tera reconfigure -i inventory/prod-b      # node tersisa tidak di-restart
+```
+
+- Ditolak jika cluster tidak sehat, jumlah node sesudahnya di bawah `mariadb_galera_min_nodes`, atau host itu
+  writer (`-e mariadb_scale_in_allow_writer=true`: writer pindah ke node berikutnya) atau `mariadb_backup_host`
+  (pindahkan dulu, atau `-e mariadb_scale_in_allow_backup_host=true`).
+- Di antara langkah 1 dan 2, **semua** perintah (`deploy`, `reconfigure`, `upgrade`, `recover`, `restore`) menolak
+  berjalan selama host itu masih di inventory. Jika cluster mati di antara kedua langkah: hapus host dari
+  inventory dulu, baru `tera recover`.
+- Datadir, paket, dan config di host itu tidak dihapus. **Setelah langkah 2**, pilih salah satu:
+  - matikan server itu; atau
+  - bersihkan dengan `tera destroy` memakai inventory sementara yang **hanya berisi host itu**:
+
+    ```bash
+    cp -r inventory/prod-b inventory/prod-b-db02
+    # edit inventory/prod-b-db02/hosts.yml: hanya db02 (di group mariadb, dan loadbalancer jika db02 dulu
+    # load balancer). Hapus host lain dan group mariadb_backup_target: destroy juga membersihkan host backup.
+    ./tera destroy -i inventory/prod-b-db02 --yes-i-really-really-mean-it -e tera_cluster_name=prod-b
+    rm -r inventory/prod-b-db02
+    ```
+
+- Menambahkan host itu kembali: kembalikan ke `hosts.yml`, lalu
+  `./tera deploy -i inventory/prod-b -e mariadb_scale_in_allow_readd=true`. Jika datadir-nya masih berisi
+  database (salinan lama), tambahkan juga `-e mariadb_galera_allow_sst_overwrite=true`: data itu ditimpa SST.
+
 ## Backup dan restore
 
 Backup memakai `mariabackup` (full + incremental, dikompresi zstd), dijalankan systemd timer di node backup,

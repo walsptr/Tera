@@ -12,6 +12,7 @@
 | Synced | `wsrep_local_state_comment = Synced` (`wsrep_local_state = 4`) |
 | Marker | file `/etc/tera/mariadb-galera.bootstrapped`; tanda cluster pernah di-bootstrap oleh Tera |
 | Restart pending marker | file `/etc/tera/mariadb-restart-pending` (`mariadb_restart_marker`); ada = config baru belum aktif (ADR 0009) |
+| Removed marker | file `/etc/tera/mariadb-removed` (`mariadb_removed_marker`); ada = host dikeluarkan lewat `tera scale-in` (ADR 0017) dan ditolak semua action |
 | Restore marker | file `/etc/tera/mariadb-restore.active` (`mariadb_restore_marker`); ada = `tera restore` berjalan atau terputus, backup menolak berjalan (ADR 0013) |
 | Bootstrap host | `mariadb_bootstrap_host` (default `groups['mariadb'][0]`) |
 | grastate | `grastate.dat` di datadir: `uuid`, `seqno`, `safe_to_bootstrap` |
@@ -93,6 +94,8 @@ Dievaluasi setelah config ditulis, sebelum start/restart.
 - Durabilitas: marker di-`sync` ke disk **sebelum** config ditulis, dan config (`99-tera.cnf`,
   `98-tera-sst.cnf`) di-`sync` sebelum MariaDB bisa di-start atau di-restart. Mati listrik tepat setelah Tera
   menulis tidak bisa menyisakan config baru tanpa marker. Marker bootstrap juga di-`sync` setelah ditulis.
+- Pengecualian (ADR 0017): config yang hanya kehilangan alamat di `wsrep_cluster_address` setelah `tera scale-in`
+  ditulis tanpa marker dan tanpa restart (lihat "Scale out dan scale in").
 - Marker dihapus hanya oleh: rolling restart yang sukses (port terbuka, dan Synced untuk galera), start
   pertama standalone, bootstrap/join galera, serta `tera recover` setelah semua node Synced (service menyala
   dengan config terbaru).
@@ -145,7 +148,34 @@ berhenti; node lain tidak disentuh. Perbaiki penyebabnya (log di `/var/log/tera/
 **Scale out:** tambah host ke inventory → `tera deploy` tanpa `--limit` → node baru join via SST,
 node lama di-rolling restart karena `wsrep_cluster_address` berubah, HAProxy di-reload.
 
-**Scale in** (manual untuk sekarang): stop node, hapus dari inventory, lalu `tera reconfigure`.
+**Scale in** (ADR 0017), dua langkah:
+
+1. `tera scale-in -i … -e tera_scale_in_host=<host> --yes-i-really-mean-it`. Prechecks di semua node: mode
+   galera, tanpa `--limit`, cluster Primary dan semua Synced dengan size = jumlah node inventory, jumlah node
+   sesudahnya ≥ `mariadb_galera_min_nodes`, bukan writer `single_writer` (kecuali `mariadb_scale_in_allow_writer`),
+   bukan `mariadb_backup_host` saat backup aktif (kecuali `mariadb_scale_in_allow_backup_host`), ada node load
+   balancer lain jika host itu juga load balancer, tidak ada restore, tidak ada host bermarker "removed". Di host
+   itu, di bawah lock backup: drain (socket clustercheck dihentikan dan di-disable, tunggu DOWN di HAProxy) → timer
+   backup dihentikan dan di-disable → jika host itu load balancer: Keepalived dihentikan (VIP pindah; tunggu VIP
+   menjawab dan tepat satu node lain memegangnya), lalu HAProxy; keduanya di-disable → MariaDB dihentikan dan
+   di-disable → marker `/etc/tera/mariadb-removed` ditulis dan di-`sync`. Node tersisa: tunggu Synced dan size
+   berkurang satu. Datadir, paket, dan config tetap.
+2. Operator menghapus host dari inventory (group `mariadb`, dan `loadbalancer` jika ada), lalu `tera reconfigure`:
+   `wsrep_cluster_address`, backend HAProxy, peer Keepalived, rule firewall, dan kunci host backup diperbarui.
+
+**Tanpa restart di langkah 2** (pengecualian sempit dari ADR 0009): jika satu-satunya perbedaan `99-tera.cnf` di
+node adalah alamat yang hilang dari `wsrep_cluster_address` (urutan sisanya sama) dan node itu Primary dengan
+`wsrep_cluster_size` = jumlah node `mariadb` di inventory, config ditulis tanpa restart pending marker dan tanpa
+restart (pesan "ditulis tanpa restart (scale in, ADR 0017)", juga di `--check --diff`). Perbedaan lain apa pun, atau
+node yang dihapus dari inventory masih ada di cluster (peringatan: keluarkan dulu lewat `tera scale-in`), mengikuti
+ADR 0009: marker + rolling restart. Tera tidak pernah menjalankan `SET GLOBAL wsrep_cluster_address`.
+
+**Marker "removed":** `deploy`, `reconfigure`, `prechecks`, `upgrade`, `recover`, `restore`, dan `scale-in` gagal di
+prechecks jika host di inventory punya marker itu. Host itu tidak pernah dikecualikan otomatis: operator
+menghapusnya dari inventory (langkah 2), lalu mengulang perintahnya. Hanya `deploy -e
+mariadb_scale_in_allow_readd=true` yang menambahkannya kembali sebagai node baru: pengaman SST berlaku untuk node
+itu walaupun marker galera-nya ada (datadir berisi database → butuh juga `mariadb_galera_allow_sst_overwrite`,
+karena datanya salinan lama). Marker dihapus setelah node itu Synced.
 
 ## Recover
 
@@ -224,3 +254,6 @@ SST untuk data besar bisa butuh nilai yang lebih tinggi; naikkan di `group_vars`
 - Paket MariaDB menyalakan MariaDB sendiri di tengah `tera upgrade`, atau dua `mariadb-upgrade` berjalan bersamaan.
 - Lebih dari satu node di-upgrade bersamaan, atau writer di-upgrade sebelum node lain.
 - Backup dibuat saat restore berjalan atau terputus.
+- Node yang dikeluarkan lewat `tera scale-in` dinyalakan atau di-join lagi oleh action apa pun, kecuali `deploy`
+  dengan `mariadb_scale_in_allow_readd` (dan pengaman SST).
+- Restart karena `wsrep_cluster_address` hanya kehilangan node yang sudah keluar dari cluster.

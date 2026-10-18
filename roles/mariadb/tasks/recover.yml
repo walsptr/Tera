@@ -17,6 +17,12 @@
       ('{{ mariadb_recover_from }}') harus kosong atau salah satu dari: {{ groups['mariadb'] | join(', ') }}.
     quiet: true
 
+# ADR 0017: recover would start a host taken out by tera scale-in again.
+- name: Refuse hosts removed by tera scale-in
+  ansible.builtin.include_tasks: removed_check.yml
+  vars:
+    _mariadb_removed_action: recover
+
 - name: Read Galera status
   ansible.builtin.include_tasks: status.yml
 

@@ -30,6 +30,12 @@
     quiet: true
   run_once: true
 
+# ADR 0017: restore would join a host taken out by tera scale-in again (full SST).
+- name: Refuse hosts removed by tera scale-in
+  ansible.builtin.include_tasks: removed_check.yml
+  vars:
+    _mariadb_removed_action: restore
+
 # The node whose backups are restored: mariadb_restore_source_host (default mariadb_backup_host). Local
 # backups live on that node; remote ones under its name on the backup host.
 - name: Locate the backup source

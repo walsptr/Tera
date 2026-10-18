@@ -92,3 +92,31 @@ pengecualian, usulan Claude yang disetujui pemilik pada review 2026-10-16:
   dibarengi perubahan custom config lain memicu rolling restart; "lupa menghapus dari inventory": `reconfigure`/`deploy` ditolak
   dengan pesan, cluster tidak berubah; `mariadb_scale_in_allow_readd: true` menambahkan db02 kembali dan marker
   hilang; penolakan di bawah minimum, writer dan node backup tanpa override, cluster tidak sehat.
+
+## Revisi
+
+- 2026-10-18: tambahan saat implementasi, diusulkan Claude dan disetujui pemilik proyek pada review rencana
+  2026-10-18:
+  - **`recover` dan `restore` juga menolak** host bermarker "removed". Keduanya menyalakan setiap node di
+    inventory, sehingga cluster yang mati di antara langkah 1 dan langkah 2 akan menyalakan dan me-join node yang
+    sudah dikeluarkan. Pesan error menyuruh operator menghapus host dari inventory (langkah 2), lalu menjalankan
+    recover/restore lagi. Host itu tidak pernah dikecualikan otomatis. Diuji: cluster mati di antara langkah 1
+    dan 2.
+  - **Pengaman SST juga mencakup node bermarker "removed"**; marker galera tetap di node itu. Re-add dengan datadir
+    yang masih berisi database butuh `mariadb_scale_in_allow_readd` **dan** `mariadb_galera_allow_sst_overwrite`;
+    pesan error menjelaskan bahwa data itu salinan lama dari sebelum node dikeluarkan dan menyebut kedua flag.
+    Diuji: re-add dengan satu flag ditolak, dengan kedua flag berhasil.
+- 2026-10-18: keputusan pemilik proyek atas pertanyaan Claude saat implementasi: host yang juga ada di group
+  `loadbalancer` (topologi colocated) melepas VIP di langkah 1. Setelah drain, Keepalived dihentikan lebih dulu
+  (VIP pindah ke node load balancer lain; Tera menunggu VIP menjawab dan memastikan tepat satu node lain yang
+  memegangnya), lalu HAProxy; keduanya di-disable. Prechecks menolak jika tidak ada node load balancer lain. Di
+  langkah 2 operator menghapus host dari group `mariadb` dan `loadbalancer`.
+- 2026-10-18: detail implementasi, diusulkan Claude (bukan keputusan pemilik; sampaikan jika perlu diubah):
+  - Hanya `deploy` yang menerima `mariadb_scale_in_allow_readd` (join sebagai node baru adalah jalur deploy);
+    `reconfigure`, `upgrade`, `recover`, `restore`, dan `scale-in` berikutnya selalu menolak host bermarker.
+  - Marker "removed" dihapus setelah node yang di-re-add Synced (di jalur join `deploy`).
+  - Lock backup selama langkah 1 dipegang unit sementara `tera-mariadb-scale-in-lock` (pola ADR 0015); unit yang
+    tertinggal karena run terputus dilepas `deploy`/`reconfigure`/`upgrade` berikutnya dengan peringatan, seperti
+    lock `tera upgrade`.
+  - `tera-clustercheck.socket` dan timer backup di host itu di-disable (bukan hanya dihentikan), agar reboot
+    tidak memasukkan node itu kembali ke pool atau menjalankan backup.

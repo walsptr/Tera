@@ -1,0 +1,113 @@
+---
+# tera scale-in prechecks (ADR 0017), on every mariadb node before anything changes. tera_scale_in_host is the
+# host to take out of the cluster (step 1); removing it from the inventory is step 2.
+- name: Load variables
+  ansible.builtin.import_tasks: vars.yml
+
+- name: Check scale-in prerequisites
+  ansible.builtin.assert:
+    that:
+      - mariadb_cluster_mode == 'galera'
+      - ansible_play_hosts_all | sort == groups['mariadb'] | sort
+      - tera_scale_in_host | default('') in groups['mariadb']
+    fail_msg: >-
+      tera scale-in hanya untuk mariadb_cluster_mode: galera, harus mencakup semua node group mariadb (tanpa
+      --limit; host di run ini: {{ ansible_play_hosts_all | join(', ') }}), dan -e tera_scale_in_host=<host> harus
+      salah satu dari: {{ groups['mariadb'] | join(', ') }} (sekarang '{{ tera_scale_in_host | default('') }}').
+    quiet: true
+
+- name: Check the cluster stays large enough
+  ansible.builtin.assert:
+    that:
+      - (groups['mariadb'] | length) - 1 >= mariadb_galera_min_nodes | int
+    fail_msg: >-
+      Setelah {{ tera_scale_in_host }} dikeluarkan tersisa {{ (groups['mariadb'] | length) - 1 }} node, kurang dari
+      mariadb_galera_min_nodes ({{ mariadb_galera_min_nodes }}). Tambah node dulu (scale out), baru keluarkan node ini.
+    quiet: true
+  run_once: true
+
+- name: Refuse the single_writer writer without override
+  ansible.builtin.assert:
+    that:
+      - tera_scale_in_host != groups['mariadb'][0] or (mariadb_scale_in_allow_writer | bool) or mariadb_lb_mode != 'single_writer'
+    fail_msg: >-
+      {{ tera_scale_in_host }} adalah writer HAProxy (node pertama group mariadb, mariadb_lb_mode single_writer).
+      Saat drain, semua koneksi pindah ke {{ groups['mariadb'][1] }}, dan setelah langkah 2 (host dihapus dari
+      inventory) {{ groups['mariadb'][1] }} menjadi writer tetap. Jika itu yang dimaksud, ulangi dengan
+      -e mariadb_scale_in_allow_writer=true.
+    quiet: true
+  run_once: true
+
+- name: Refuse the backup host without override
+  ansible.builtin.assert:
+    that:
+      - not (mariadb_backup_enabled | bool) or tera_scale_in_host != mariadb_backup_host or (mariadb_scale_in_allow_backup_host | bool)
+    fail_msg: >-
+      {{ tera_scale_in_host }} adalah mariadb_backup_host: setelah scale in cluster tidak punya backup terjadwal.
+      Pindahkan dulu mariadb_backup_host ke node lain di group_vars/all/tera.yml dan jalankan ./tera reconfigure, atau
+      ulangi dengan -e mariadb_scale_in_allow_backup_host=true.
+    quiet: true
+  run_once: true
+
+- name: Check another load balancer remains
+  ansible.builtin.assert:
+    that:
+      - (groups['loadbalancer'] | default([]) | reject('equalto', tera_scale_in_host) | list | length) > 0
+    fail_msg: >-
+      {{ tera_scale_in_host }} adalah satu-satunya node load balancer (pemegang VIP {{ tera_vip_address }}). Tambahkan
+      node load balancer lain dulu, baru keluarkan node ini.
+    quiet: true
+  run_once: true
+  when:
+    - tera_lb_enabled | bool
+    - tera_scale_in_host in (groups['loadbalancer'] | default([]))
+
+# A host removed earlier must leave the inventory before the next scale in (step 2 first).
+- name: Refuse hosts removed by an earlier tera scale-in
+  ansible.builtin.include_tasks: removed_check.yml
+  vars:
+    _mariadb_removed_action: scale_in
+
+- name: Check no restore is running
+  ansible.builtin.stat:
+    path: "{{ mariadb_restore_marker }}"
+  register: _mariadb_scale_in_restore
+  check_mode: false
+
+- name: Refuse while a restore is running
+  ansible.builtin.assert:
+    that:
+      - not _mariadb_scale_in_restore.stat.exists
+    fail_msg: >-
+      {{ inventory_hostname }}: restore marker {{ mariadb_restore_marker }} ada (tera restore berjalan atau terputus,
+      ADR 0013). Selesaikan restore dulu, baru jalankan tera scale-in.
+    quiet: true
+
+- name: Read Galera status
+  ansible.builtin.include_tasks: status.yml
+
+- name: Read the node state
+  ansible.builtin.command:
+    cmd: >-
+      mariadb -N -B -e "SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_local_state', 'wsrep_cluster_size')"
+  register: _mariadb_scale_in_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check the cluster is healthy
+  ansible.builtin.assert:
+    that:
+      - _mariadb_scale_in_state.rc == 0
+      - _mariadb_wsrep_primary | bool
+      - _state.wsrep_local_state | default('') == '4'
+      - _state.wsrep_cluster_size | default('0') | int == groups['mariadb'] | length
+    fail_msg: >-
+      {{ inventory_hostname }}: {% if _mariadb_scale_in_state.rc != 0 %}MariaDB tidak berjalan atau tidak bisa
+      dihubungi{% else %}node tidak sehat (wsrep_local_state={{ _state.wsrep_local_state | default('?') }}, harus
+      4/Synced; wsrep_cluster_size={{ _state.wsrep_cluster_size | default('?') }} dari {{ groups['mariadb'] | length }}
+      node; Primary={{ _mariadb_wsrep_primary }}){% endif %}. Scale in hanya berjalan di cluster yang sehat; perbaiki
+      dulu (./tera deploy atau ./tera recover).
+    quiet: true
+  vars:
+    _state: "{{ dict(_mariadb_scale_in_state.stdout_lines | map('split')) }}"
