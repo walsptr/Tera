@@ -59,13 +59,15 @@
   ansible.builtin.debug:
     msg: >-
       PERINGATAN: {{ inventory_hostname }}: tera_monitoring_sources membatasi sumber ({{ tera_monitoring_sources | join(', ') }}),
-      tetapi firewalld {{ 'tidak berjalan' if _monitoring_fw_managed | bool else 'tidak dikelola Tera' }} di host ini:
+      tetapi firewalld
+      {{ 'tidak berjalan' if ((tera_manage_firewall | bool) and (monitoring_firewall_manage | bool)) else 'tidak dikelola Tera' }}
+      di host ini:
       sources tidak ditegakkan, port {{ _monitoring_exporters | selectattr('enabled') | map(attribute='port') | join(', ') }}
       terbuka untuk siapa saja yang bisa menjangkau host ini. Batasi lewat firewall jaringan atau ufw (README, bagian
       Keamanan), atau jalankan firewalld.
   when:
     - tera_monitoring_enabled | bool
     - tera_monitoring_sources | length > 0
-    - not (_monitoring_fw_managed | bool) or (ansible_facts['services']['firewalld.service']['state'] | default('')) != 'running'
-  vars:
-    _monitoring_fw_managed: "{{ (tera_manage_firewall | bool) and (monitoring_firewall_manage | bool) }}"
+    - >-
+      not ((tera_manage_firewall | bool) and (monitoring_firewall_manage | bool))
+      or (ansible_facts['services']['firewalld.service']['state'] | default('')) != 'running'

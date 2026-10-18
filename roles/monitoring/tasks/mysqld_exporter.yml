@@ -60,8 +60,7 @@
     name: tera-mysqld-exporter.service
     enabled: true
     daemon_reload: "{{ _monitoring_mysqld_unit is changed }}"
-    state: "{{ 'restarted' if _monitoring_mysqld_changed | bool else 'started' }}"
+    state: >-
+      {{ 'restarted' if ((_monitoring_mysqld_bin_changed | bool) or (_monitoring_mysqld_cnf is changed)
+                         or (_monitoring_mysqld_unit is changed)) else 'started' }}
   ignore_errors: "{{ ansible_check_mode }}"
-  vars:
-    _monitoring_mysqld_changed: >-
-      {{ (_monitoring_mysqld_bin_changed | bool) or (_monitoring_mysqld_cnf is changed) or (_monitoring_mysqld_unit is changed) }}
