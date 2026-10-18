@@ -187,13 +187,15 @@
     # A first Ubuntu run failed here once without details (2026-10-18): always show what the host saw.
     - name: Show what the host saw
       ansible.builtin.debug:
-        msg: "{{ _se_refused.results | map(attribute='status') | list | to_json }} {{ _se_refused.results | map(attribute='msg', default='') | list | to_json }}"
+        msg: &se_saw >-
+          {{ _se_refused.results | map(attribute='status') | list | to_json }}
+          {{ _se_refused.results | map(attribute='msg', default='') | list | to_json }}
 
     - name: Assert Rocky refuses the host and Ubuntu does not
       ansible.builtin.assert:
         that:
           - _se_refused.results | selectattr('status', 'in', [200, 401]) | list | length == (0 if _se_rocky else 3)
-        fail_msg: "{{ _se_refused.results | map(attribute='status') | list | to_json }} {{ _se_refused.results | map(attribute='msg', default='') | list | to_json }}"
+        fail_msg: *se_saw
 
 - name: Empty sources
   hosts: localhost
