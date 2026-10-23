@@ -82,3 +82,9 @@ mariadb_scale_in_allow_backup_host: false
 # A host with the "removed" marker is refused by every action; deploy adds it back as a new node only with
 # this true (and mariadb_galera_allow_sst_overwrite when its datadir still holds databases).
 mariadb_scale_in_allow_readd: false
+
+# --- Dynamic config (ADR 0018) -----------------------------------------------
+# Extra variables applied with SET GLOBAL instead of a restart, on top of Tera's list (roles/mariadb/vars/main.yml).
+# wsrep_*, binlog_*, log_bin*, gtid_*, auto_increment_*, server_id, read_only, innodb_flush_log_at_trx_commit
+# and sync_binlog are refused. At your own risk: the value must be valid for SET GLOBAL on every node.
+mariadb_dynamic_variables_extra: []

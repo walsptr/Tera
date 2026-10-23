@@ -9,12 +9,16 @@
   connection: local
   gather_facts: false
   tasks:
+    # No key of ../shared/dynamic.yml (imported at the end): zz-reconf.cnf sorts after its zz-dynamic.cnf,
+    # so a shared key would override the dynamic test values.
     - name: Write global custom config
       ansible.builtin.copy:
         content: |
-          # Molecule reconfigure: global change
+          # Molecule reconfigure: global change. max_prepared_stmt_count is not a dynamic variable
+          # (ADR 0018), so the change needs a rolling restart.
           [mysqld]
-          wait_timeout = 654
+          net_write_timeout = 654
+          max_prepared_stmt_count = 16654
         dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/zz-reconf.cnf"
         mode: "0644"
 
@@ -109,9 +113,10 @@
     - name: Write per-host custom config for db02
       ansible.builtin.copy:
         content: |
-          # Molecule reconfigure: per-host change
+          # Molecule reconfigure: per-host change (with a non-dynamic variable, ADR 0018)
           [mysqld]
           interactive_timeout = 888
+          max_prepared_stmt_count = 16888
         dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/db02/zz-reconf.cnf"
         mode: "0644"
 
@@ -170,3 +175,6 @@
       ansible.builtin.assert:
         that:
           - _se_started_3.status.ActiveEnterTimestampMonotonic == _se_started_2.status.ActiveEnterTimestampMonotonic
+
+- name: Dynamic config (ADR 0018)
+  ansible.builtin.import_playbook: ../shared/dynamic.yml

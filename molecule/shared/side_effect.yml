@@ -250,6 +250,9 @@
           - _se_bk_rows.stdout_lines == ['A\t50', 'B\t50']
       when: _se_backup
 
+- name: Dynamic config (ADR 0018)
+  ansible.builtin.import_playbook: dynamic.yml
+
 - name: Add a pending config change
   hosts: localhost
   connection: local
@@ -258,9 +261,11 @@
     - name: Write extra custom config file
       ansible.builtin.copy:
         content: |
-          # Molecule side effect: change applied by an interrupted run
+          # Molecule side effect: change applied by an interrupted run. max_prepared_stmt_count is not a
+          # dynamic variable (ADR 0018), so the change needs a restart.
           [mysqld]
           max_connections = 543
+          max_prepared_stmt_count = 16543
         dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/db01/zz-pending.cnf"
         mode: "0644"
 

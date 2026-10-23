@@ -1,0 +1,63 @@
+---
+# ADR 0018: apply _mariadb_dyn_changes (already ordered) with SET GLOBAL as root over the socket (ADR 0008),
+# read every value back and compare after normalization. On a failure or a value the server adjusted, every
+# key is set back to its running value from before, in reverse order, not only the failed one. Sets
+# _mariadb_dyn_applied (bool) and _mariadb_dyn_error (message).
+- name: Apply the change with SET GLOBAL
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - -N
+      - -B
+      - -e
+      # test-only fault injection: __tera_test_fail_set_global_host makes SET GLOBAL fail on that host.
+      - >-
+        {% for c in _mariadb_dyn_changes %}SET GLOBAL {{ c.variable }} = {{ c.new | tera_mysql_literal }};
+        {% endfor %}{% if (__tera_test_fail_set_global_host | default('')) == inventory_hostname %}SET GLOBAL
+        tera_test_fail = 1;{% endif %}
+  register: _mariadb_dyn_set
+  changed_when: _mariadb_dyn_set.rc == 0
+  failed_when: false
+
+- name: Read the values back
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - -N
+      - -B
+      - -e
+      - "SELECT {{ _mariadb_dyn_changes | map(attribute='variable') | map('regex_replace', '^', '@@GLOBAL.') | join(', ') }}"
+  register: _mariadb_dyn_readback
+  changed_when: false
+  failed_when: false
+
+- name: Compare the values read back
+  ansible.builtin.set_fact:
+    _mariadb_dyn_mismatch: "{{ _mariadb_dyn_changes | tera_dynamic_mismatch(dict(_vars | zip(_values))) }}"
+  vars:
+    _vars: "{{ _mariadb_dyn_changes | map(attribute='variable') | list }}"
+    _values: "{{ (_mariadb_dyn_readback.stdout_lines | default([''], true) | first).split('\t') }}"
+
+- name: Remember the result of SET GLOBAL
+  ansible.builtin.set_fact:
+    _mariadb_dyn_applied: "{{ (_mariadb_dyn_set.rc == 0) and (_mariadb_dyn_readback.rc == 0) and (_mariadb_dyn_mismatch | length == 0) }}"
+    _mariadb_dyn_error: >-
+      {% if _mariadb_dyn_set.rc != 0 %}SET GLOBAL gagal: {{ _mariadb_dyn_set.stderr | trim }}{% elif _mariadb_dyn_readback.rc != 0 %}nilai
+      tidak bisa dibaca kembali: {{ _mariadb_dyn_readback.stderr | trim }}{% else %}server menyesuaikan nilai:
+      {% for m in _mariadb_dyn_mismatch %}{{ m.variable }} diminta {{ m.requested }}, nilai efektif {{ m.effective }}{{ '; ' if not loop.last }}{% endfor %}
+      (mis. dibulatkan ke kelipatan yang diizinkan atau dibatasi variabel lain){% endif %}
+
+- name: Roll back every key to its value from before
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - -N
+      - -B
+      - -e
+      - >-
+        {% for c in _mariadb_dyn_changes | reverse %}SET GLOBAL {{ c.variable }} =
+        {{ _mariadb_dyn_running[c.variable] | tera_mysql_literal }}; {% endfor %}
+  register: _mariadb_dyn_rollback
+  changed_when: true
+  failed_when: false
+  when: not (_mariadb_dyn_applied | bool)

@@ -1,0 +1,22 @@
+---
+# From the controller (ADR 0018 test): add _dyn_lines to zz-dynamic.cnf, reconfigure must fail on the first node
+# with _dyn_expect, then the accepted config (zz-dynamic.cnf.ok) is put back.
+- name: Add the refused lines
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.file', _dyn_file ~ '.ok') }}\n{{ _dyn_lines | join('\n') }}\n"
+    dest: "{{ _dyn_file }}"
+    mode: "0644"
+
+- name: Run the refused reconfigure
+  ansible.builtin.include_tasks: tera_run.yml
+  vars:
+    _se_case:
+      action: reconfigure
+      expect: "{{ _dyn_expect }}"
+      expect_also: Config tidak ditulis di node mana pun
+
+- name: Put the accepted config back
+  ansible.builtin.copy:
+    src: "{{ _dyn_file }}.ok"
+    dest: "{{ _dyn_file }}"
+    mode: "0644"

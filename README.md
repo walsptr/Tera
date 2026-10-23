@@ -135,6 +135,17 @@ innodb_buffer_pool_size = {{ (ansible_facts['memtotal_mb'] * 0.6) | int }}M
   `docs/CUSTOM-CONFIG.md`). Value `__remove__` menghapus key bawaan.
 - Hanya node yang `99-tera.cnf`-nya berubah yang di-restart, **satu per satu**, dan node berikutnya baru
   di-restart setelah node sebelumnya Synced kembali. Run tanpa perubahan tidak me-restart apa pun.
+- **Tanpa restart** untuk variabel dinamis (ADR 0018), mis. `max_connections`, `wait_timeout`,
+  `max_allowed_packet`, `log_slow_query`/`slow_query_log`, `innodb_io_capacity` (daftar lengkap:
+  `roles/mariadb/vars/main.yml`; tambahan lewat `mariadb_dynamic_variables_extra`, kecuali `wsrep_*`, `binlog_*`,
+  `log_bin*`, `gtid_*`, `auto_increment_*`, `server_id`, `read_only`, `innodb_flush_log_at_trx_commit`,
+  `sync_binlog`). Jika **semua** key yang berubah ada di daftar itu, Tera memakai `SET GLOBAL` lalu menulis config;
+  satu key lain saja (atau key yang dihapus) = restart seperti biasa. `--check --diff` menampilkan mana yang tanpa
+  restart.
+- **Variabel per sesi** (mis. `wait_timeout`, `interactive_timeout`, `net_read_timeout`, `sort_buffer_size`) yang
+  diubah tanpa restart hanya berlaku untuk **koneksi baru**; koneksi yang sudah terbuka tetap memakai nilai lama.
+- Tera hanya membandingkan file config lama dan baru. `SET GLOBAL` manual di server tidak terdeteksi dan hilang
+  saat restart berikutnya; ubah nilai lewat custom config.
 - Jika run terputus setelah config ditulis tetapi sebelum restart, run berikutnya tetap me-restart.
 - Jangan menaruh password di custom config; `wsrep_sst_auth` di custom config ditolak.
 

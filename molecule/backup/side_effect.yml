@@ -452,7 +452,8 @@
 
     - name: Add a config change that needs a restart
       ansible.builtin.copy:
-        content: "[mysqld]\nmax_connections = 345\n"
+        # max_prepared_stmt_count is not a dynamic variable (ADR 0018): the change needs a restart.
+        content: "[mysqld]\nmax_connections = 345\nmax_prepared_stmt_count = 16345\n"
         dest: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/db01/zz-backup-lock.cnf"
         mode: "0644"
       delegate_to: localhost

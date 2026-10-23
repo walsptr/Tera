@@ -1,0 +1,43 @@
+---
+# ADR 0018: variables applied with SET GLOBAL instead of a restart (canonical names, MariaDB 11.4).
+# Conservative on purpose: no innodb_buffer_pool_size (resized in the background, stalls I/O) and no
+# file paths. Operators add more with mariadb_dynamic_variables_extra, at their own risk.
+_mariadb_dynamic_variables:
+  - max_connections
+  - max_user_connections
+  - max_connect_errors
+  - wait_timeout
+  - interactive_timeout
+  - connect_timeout
+  - net_read_timeout
+  - net_write_timeout
+  - max_allowed_packet
+  - innodb_lock_wait_timeout
+  - log_slow_query
+  - log_slow_query_time
+  - log_slow_min_examined_row_limit
+  - log_warnings
+  - table_open_cache
+  - table_definition_cache
+  - thread_cache_size
+  - tmp_table_size
+  - max_heap_table_size
+  - sort_buffer_size
+  - join_buffer_size
+  - read_buffer_size
+  - read_rnd_buffer_size
+  - innodb_io_capacity
+  - innodb_io_capacity_max
+# Old names still accepted by MariaDB 11.4, mapped to the variable Tera sets and reads back.
+_mariadb_dynamic_aliases:
+  slow_query_log: log_slow_query
+  long_query_time: log_slow_query_time
+  min_examined_row_limit: log_slow_min_examined_row_limit
+# Never dynamic, also not through mariadb_dynamic_variables_extra (prechecks): replication, identity and
+# durability of the whole cluster change only through a restart (ADR 0018).
+_mariadb_dynamic_denied_prefixes: [wsrep_, binlog_, log_bin, gtid_, auto_increment_]
+_mariadb_dynamic_denied:
+  - server_id
+  - read_only
+  - innodb_flush_log_at_trx_commit
+  - sync_binlog

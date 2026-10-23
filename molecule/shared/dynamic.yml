@@ -1,0 +1,346 @@
+---
+# Dynamic config through SET GLOBAL (ADR 0018), imported by the shared side effect (standalone, standalone-podman)
+# and by reconfigure (galera). Custom config in config/mariadb/zz-dynamic.cnf; the first node is mariadb[0].
+# 1. --check --diff shows running -> new without changing anything; reconfigure applies wait_timeout,
+#    max_allowed_packet (512M -> bytes) and the aliases slow_query_log/long_query_time without restart;
+# 2. innodb_io_capacity / innodb_io_capacity_max raised, then lowered, without restart;
+# 3. a value the server rounds (max_allowed_packet 1000000) and an invalid value fail the run on the first node:
+#    every key of that change is rolled back, 99-tera.cnf unchanged on every node;
+# 4. (galera) SET GLOBAL failing on another node only (__tera_test_fail_set_global_host): that node restarts;
+# 5. mariadb_dynamic_variables_extra with wsrep_* is refused; a run without changes is changed=0;
+# 6. removing the keys again needs a restart (rolling restart, no marker left).
+- name: Dynamic config - start
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the OS family
+      ansible.builtin.setup:
+        gather_subset: [min]
+
+    - name: Read the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _dyn_start0
+
+- name: Dynamic config - check mode and first change
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _dyn_file: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/zz-dynamic.cnf"
+    _dyn_nodes: "{{ groups['mariadb'] | length }}"
+  tasks:
+    - name: Write dynamic changes
+      ansible.builtin.copy:
+        content: |
+          # Molecule: dynamic variables (ADR 0018)
+          [mysqld]
+          wait_timeout = 1234
+          max_allowed_packet = 512M
+          slow_query_log = ON
+          long_query_time = 2.5
+        dest: "{{ _dyn_file }}"
+        mode: "0644"
+
+    - name: Run reconfigure --check --diff
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [--check, --diff]
+          expect_success: true
+
+    - name: Assert --check shows the change without restart
+      ansible.builtin.assert:
+        that:
+          - (_dyn_out | regex_findall('perubahan config tanpa restart \(SET GLOBAL') | length) == _dyn_nodes | int
+          - _dyn_out is search('max_allowed_packet [0-9]+ -> 512M')
+          - _dyn_out is search('long_query_time [0-9.]+ -> 2.5')
+      vars:
+        _dyn_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+
+- name: Dynamic config - check mode changed nothing
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read wait_timeout
+      ansible.builtin.command:
+        cmd: mariadb -N -B -e "SELECT @@GLOBAL.wait_timeout"
+      register: _dyn_wait_check
+      changed_when: false
+
+    - name: Assert check mode did not SET
+      ansible.builtin.assert:
+        that:
+          - _dyn_wait_check.stdout != '1234'
+
+- name: Dynamic config - apply
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+- name: Dynamic config - check the first change
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check values without restart
+      ansible.builtin.include_tasks: tasks/dynamic_check.yml
+      vars:
+        _dyn_expect:
+          wait_timeout: "1234"
+          max_allowed_packet: "536870912"
+          log_slow_query: "1"
+          log_slow_query_time: "2.500000"
+
+- name: Dynamic config - io capacity up and down
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _dyn_file: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/zz-dynamic.cnf"
+  tasks:
+    # Defaults 200 / 2000: innodb_io_capacity 3000 is only valid after innodb_io_capacity_max is raised.
+    - name: Raise the io capacity pair
+      ansible.builtin.lineinfile:
+        path: "{{ _dyn_file }}"
+        line: "{{ item }}"
+      loop:
+        - innodb_io_capacity = 3000
+        - innodb_io_capacity_max = 6000
+
+    - name: Run reconfigure with the raised pair
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+    # Lowering: innodb_io_capacity_max 1000 is only valid after innodb_io_capacity is lowered.
+    - name: Lower the io capacity pair
+      ansible.builtin.replace:
+        path: "{{ _dyn_file }}"
+        regexp: "{{ item.re }}"
+        replace: "{{ item.to }}"
+      loop:
+        - {re: '^innodb_io_capacity = 3000$', to: innodb_io_capacity = 300}
+        - {re: '^innodb_io_capacity_max = 6000$', to: innodb_io_capacity_max = 1000}
+
+- name: Dynamic config - check the raised pair
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check values without restart
+      ansible.builtin.include_tasks: tasks/dynamic_check.yml
+      vars:
+        _dyn_expect: {innodb_io_capacity: "3000", innodb_io_capacity_max: "6000"}
+
+- name: Dynamic config - lower the pair
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure with the lowered pair
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+- name: Dynamic config - check the lowered pair
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check values without restart
+      ansible.builtin.include_tasks: tasks/dynamic_check.yml
+      vars:
+        _dyn_expect: {innodb_io_capacity: "300", innodb_io_capacity_max: "1000", wait_timeout: "1234"}
+
+    - name: Remember 99-tera.cnf before the refused changes
+      ansible.builtin.stat:
+        path: "{{ '/etc/mysql/mariadb.conf.d/99-tera.cnf' if ansible_facts['os_family'] == 'Debian' else '/etc/my.cnf.d/99-tera.cnf' }}"
+        checksum_algorithm: sha256
+      register: _dyn_cnf_before
+
+- name: Dynamic config - refused on the first node
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _dyn_file: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/zz-dynamic.cnf"
+  tasks:
+    - name: Keep the accepted config
+      ansible.builtin.copy:
+        src: "{{ _dyn_file }}"
+        dest: "{{ _dyn_file }}.ok"
+        mode: "0644"
+
+    # A rounded value is only a warning for SET GLOBAL: both keys are applied, so both must be rolled back.
+    - name: Run a refused change
+      ansible.builtin.include_tasks: tasks/dynamic_refused.yml
+      vars:
+        _dyn_lines: [wait_timeout = 4321, max_allowed_packet = 1000000]
+        _dyn_expect: diminta 1000000, nilai efektif 999424
+
+    - name: Run an invalid value
+      ansible.builtin.include_tasks: tasks/dynamic_refused.yml
+      vars:
+        _dyn_lines: [wait_timeout = notanumber]
+        _dyn_expect: SET GLOBAL gagal
+
+- name: Dynamic config - refused changes left everything as it was
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check values without restart
+      ansible.builtin.include_tasks: tasks/dynamic_check.yml
+      vars:
+        _dyn_expect: {wait_timeout: "1234", max_allowed_packet: "536870912"}
+
+    - name: Read 99-tera.cnf after the refused changes
+      ansible.builtin.stat:
+        path: "{{ _dyn_cnf_before.stat.path }}"
+        checksum_algorithm: sha256
+      register: _dyn_cnf_after
+
+    - name: Assert 99-tera.cnf did not change
+      ansible.builtin.assert:
+        that:
+          - _dyn_cnf_after.stat.checksum == _dyn_cnf_before.stat.checksum
+
+- name: Dynamic config - SET GLOBAL fails on another node only
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _dyn_file: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/zz-dynamic.cnf"
+    _dyn_other: "{{ groups['mariadb'][1] | default('') }}"
+  tasks:
+    - name: Change wait_timeout
+      ansible.builtin.replace:
+        path: "{{ _dyn_file }}"
+        regexp: '^wait_timeout = 1234$'
+        replace: wait_timeout = 2222
+      when: _dyn_other | length > 0
+
+    - name: Run reconfigure with SET GLOBAL failing on the second node
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, "__tera_test_fail_set_global_host={{ _dyn_other }}"]
+          expect_success: true
+      when: _dyn_other | length > 0
+
+    - name: Assert the second node fell back to a restart
+      ansible.builtin.assert:
+        that:
+          - "_dyn_out is search('PERINGATAN: ' ~ _dyn_other ~ ': SET GLOBAL gagal')"
+          - _dyn_out is search('rolling restart menerapkan config ini')
+      vars:
+        _dyn_out: "{{ _se_run.stdout | regex_replace('\\s+', ' ') }}"
+      when: _dyn_other | length > 0
+
+- name: Dynamic config - only the failed node restarted
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check the values and restarts
+      ansible.builtin.include_tasks: tasks/dynamic_check.yml
+      vars:
+        _dyn_expect: {wait_timeout: "2222"}
+        _dyn_restarted: "{{ inventory_hostname == groups['mariadb'][1] }}"
+      when: groups['mariadb'] | length > 1
+
+- name: Dynamic config - deny list and idempotence
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run reconfigure with wsrep_* in mariadb_dynamic_variables_extra
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          args: [-e, '{"mariadb_dynamic_variables_extra": ["wsrep_slave_threads"]}']
+          expect: tidak boleh diubah lewat SET GLOBAL
+
+    - name: Run reconfigure without changes
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+    - name: Assert nothing changed
+      ansible.builtin.assert:
+        that:
+          - _se_changed_tasks | length == 0
+        fail_msg: "{{ _se_changed_tasks | to_json }}"
+
+- name: Dynamic config - remember start times before removing the keys
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _dyn_start_before_remove
+
+- name: Dynamic config - removing keys needs a restart
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Remove the dynamic config
+      ansible.builtin.file:
+        path: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/config/mariadb/{{ item }}"
+        state: absent
+      loop: [zz-dynamic.cnf, zz-dynamic.cnf.ok]
+
+    - name: Run reconfigure without the dynamic config
+      ansible.builtin.include_tasks: tasks/tera_run.yml
+      vars:
+        _se_case:
+          action: reconfigure
+          expect_success: true
+
+    - name: Assert the removal needed a restart
+      ansible.builtin.assert:
+        that:
+          - _se_run.stdout is search('perubahan config butuh restart')
+
+- name: Dynamic config - restarted after the removal
+  hosts: mariadb
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the MariaDB start time
+      ansible.builtin.systemd_service:
+        name: mariadb
+      register: _dyn_start_after_remove
+
+    - name: Read the restart pending marker
+      ansible.builtin.stat:
+        path: /etc/tera/mariadb-restart-pending
+      register: _dyn_marker_end
+
+    - name: Assert every node restarted and no marker is left
+      ansible.builtin.assert:
+        that:
+          - _dyn_start_after_remove.status.ActiveEnterTimestampMonotonic != _dyn_start_before_remove.status.ActiveEnterTimestampMonotonic
+          - not _dyn_marker_end.stat.exists

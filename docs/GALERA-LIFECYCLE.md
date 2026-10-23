@@ -96,6 +96,11 @@ Dievaluasi setelah config ditulis, sebelum start/restart.
   menulis tidak bisa menyisakan config baru tanpa marker. Marker bootstrap juga di-`sync` setelah ditulis.
 - Pengecualian (ADR 0017): config yang hanya kehilangan alamat di `wsrep_cluster_address` setelah `tera scale-in`
   ditulis tanpa marker dan tanpa restart (lihat "Scale out dan scale in").
+- Pengecualian (ADR 0018): jika semua key yang berubah adalah variabel dinamis, `SET GLOBAL` diterapkan di node
+  pertama jalur itu (urutan inventory, host run ini) dan dibaca kembali; gagal atau nilai disesuaikan server = semua
+  key di node itu dikembalikan dan run gagal **sebelum** config ditulis di node mana pun. Node lain: gagal = restart
+  pending marker untuk node itu (rolling restart menyelesaikannya). Node yang sukses menulis config tanpa marker.
+  `wsrep_*` dan variabel replikasi/durabilitas tidak pernah dinamis.
 - Marker dihapus hanya oleh: rolling restart yang sukses (port terbuka, dan Synced untuk galera), start
   pertama standalone, bootstrap/join galera, serta `tera recover` setelah semua node Synced (service menyala
   dengan config terbaru).
@@ -257,3 +262,5 @@ SST untuk data besar bisa butuh nilai yang lebih tinggi; naikkan di `group_vars`
 - Node yang dikeluarkan lewat `tera scale-in` dinyalakan atau di-join lagi oleh action apa pun, kecuali `deploy`
   dengan `mariadb_scale_in_allow_readd` (dan pengaman SST).
 - Restart karena `wsrep_cluster_address` hanya kehilangan node yang sudah keluar dari cluster.
+- Restart karena perubahan yang seluruhnya variabel dinamis yang sukses diterapkan dengan `SET GLOBAL`.
+- Config baru ditulis di node mana pun setelah `SET GLOBAL` gagal di node pertama.

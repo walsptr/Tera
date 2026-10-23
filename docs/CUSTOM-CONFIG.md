@@ -361,6 +361,17 @@ wsrep_on = ON
 - `tera reconfigure --check --diff` menampilkan diff tanpa mengubah apa pun. Diff hanya mencakup
   `99-tera.cnf`, yang tidak berisi secret (lihat [Secret](#secret)).
 - Perubahan di `config/mariadb/<host>/` hanya me-restart host tersebut.
+- **Tanpa restart (ADR 0018):** jika semua key yang berubah adalah variabel dinamis (whitelist Tera di
+  `roles/mariadb/vars/main.yml` ditambah `mariadb_dynamic_variables_extra`), ada di section server (`[mysqld]`,
+  `[mariadb]`, `[server]`, `[galera]`), dan tidak ada key yang dihapus, Tera menerapkannya dengan `SET GLOBAL`
+  (node pertama dulu; gagal di sana = run gagal, semua key dikembalikan, config tidak ditulis di node mana pun),
+  membaca kembali nilainya, lalu menulis `99-tera.cnf` tanpa marker dan tanpa restart. Alias lama dipetakan ke nama
+  kanonik (`slow_query_log` → `log_slow_query`, `long_query_time` → `log_slow_query_time`). Nilai yang disesuaikan
+  server (mis. `max_allowed_packet` yang bukan kelipatan 1024) ditolak dengan pesan berisi nilai efektif; pakai
+  nilai efektif itu di custom config. Perbedaan lain apa pun memakai jalur restart di atas. `--check --diff`
+  menampilkan per node `key nilai-berjalan -> nilai-baru` dan apakah butuh restart.
+- **Tera hanya membandingkan file config lama dan baru.** `SET GLOBAL` manual di server tidak terdeteksi (nilai
+  berjalan tidak dibandingkan dengan file) dan hilang saat restart berikutnya. Ubah nilai lewat custom config.
 
 ## HAProxy dan Keepalived
 

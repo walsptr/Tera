@@ -70,3 +70,38 @@ diuji.
   `docs/CONVENTIONS.md`, karena nilai yang sama sah di semua node; usulan Claude, disetujui pemilik pada review
   2026-10-16): marker ditulis dan rolling restart menyelesaikannya;
   `mariadb_dynamic_variables_extra` dengan `wsrep_*` ditolak; idempotence `changed=0`.
+
+## Revisi
+
+- 2026-10-18: keputusan pemilik proyek saat menyetujui rencana implementasi:
+  - Whitelist awal konservatif (`roles/mariadb/vars/main.yml`): tanpa `innodb_buffer_pool_size` dan tanpa
+    variabel berisi path file; operator bisa menambahkannya lewat `mariadb_dynamic_variables_extra` dengan risiko
+    sendiri.
+  - **Alias** dipetakan ke nama kanonik MariaDB 11.4 (`slow_query_log` → `log_slow_query`, `long_query_time` →
+    `log_slow_query_time`, `min_examined_row_limit` → `log_slow_min_examined_row_limit`); `SET GLOBAL` dan
+    pembacaan ulang memakai nama kanonik. Diuji.
+  - **Nilai yang disesuaikan server** (mis. `max_allowed_packet` dibulatkan ke kelipatan 1024, `table_open_cache`
+    dibatasi `open_files_limit`): pembacaan ulang yang berbeda = rollback lalu gagal, dengan pesan yang menyebut nilai
+    yang diminta dan nilai efektif. Diuji dengan `max_allowed_packet = 1000000`.
+  - **Pasangan yang saling membatasi** (`innodb_io_capacity` ≤ `innodb_io_capacity_max`): urutan `SET` mengikuti arah
+    perubahan (batas atas dulu saat naik, terakhir saat turun). Diuji naik dan turun.
+  - **Rollback** di node pertama mengembalikan **semua** key perubahan itu ke nilai berjalan sebelumnya (urutan
+    terbalik), bukan hanya key yang gagal.
+  - **Deny list** di luar `wsrep_*`: `binlog_*`, `log_bin*`, `gtid_*`, `auto_increment_*`, `server_id`, `read_only`,
+    `innodb_flush_log_at_trx_commit`, `sync_binlog`; berlaku juga untuk `mariadb_dynamic_variables_extra` lewat
+    prechecks.
+  - README menjelaskan bahwa variabel per sesi hanya berlaku untuk koneksi baru. README dan `CUSTOM-CONFIG.md`
+    menjelaskan bahwa Tera hanya membandingkan file config lama dan baru: `SET GLOBAL` manual di server tidak
+    terdeteksi dan hilang saat restart berikutnya.
+- 2026-10-18: detail implementasi, diusulkan Claude (bukan keputusan pemilik; sampaikan jika perlu diubah):
+  - Perbandingan dan normalisasi ada di filter `plugins/filter/tera_cnf.py` (diuji pytest). Perubahan yang hanya
+    menyentuh komentar (mis. baris `# Sources` karena file custom baru) dianggap jalur dinamis tanpa key, jadi tanpa
+    restart.
+  - Jalur dinamis butuh `99-tera.cnf` lama di node dan MariaDB yang berjalan; selain itu ADR 0009 (deploy pertama,
+    node mati).
+  - "Node pertama" adalah node pertama di jalur dinamis di antara host run ini (`ansible_play_hosts`, sehingga
+    `reconfigure --limit` tetap berlaku). Pada `--check`, rencana ditampilkan tanpa `SET GLOBAL`.
+  - Pengecualian scale in (ADR 0017) dievaluasi lebih dulu; perubahan yang menggabungkan penghapusan alamat dengan
+    variabel dinamis tetap memakai restart (`wsrep_cluster_address` tidak pernah dinamis).
+  - Test yang memang menguji jalur restart (ADR 0009 run terputus, lock backup, rolling restart `reconfigure`) kini
+    menambahkan `max_prepared_stmt_count` (bukan variabel dinamis) agar tetap menguji restart.

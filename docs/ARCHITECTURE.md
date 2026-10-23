@@ -15,14 +15,14 @@ ansible.cfg  requirements.yml  requirements-dev.txt  site.yml  .gitignore
 .ansible-lint  .yamllint  pyproject.toml  .github/workflows/ci.yml
 playbooks/{facts,common,mariadb,loadbalancer,backup,monitoring,mariadb-recover,mariadb-backup,mariadb-restore,mariadb-upgrade,mariadb-scale-in,destroy}.yml
 playbooks/tasks/listen_address.yml     # tera_listen_address, dipakai facts.yml dan mariadb-restore.yml
-plugins/filter/{merge_ini,tera_ip}.py   plugins/tests/test_{merge_ini,tera_ip,tera_backup}.py   # tests outside filter/: Ansible loads filter subdirs as plugins
+plugins/filter/{merge_ini,tera_ip,tera_cnf}.py   plugins/tests/test_{merge_ini,tera_ip,tera_cnf,tera_backup}.py   # tests outside filter/: Ansible loads filter subdirs as plugins
 roles/tera_defaults/defaults/main.yml
 roles/common/tasks/{prechecks,deploy,reconfigure}.yml
-roles/mariadb/{defaults,vars/{Debian,RedHat}.yml,templates,tasks}
+roles/mariadb/{defaults,vars/{main,Debian,RedHat}.yml,templates,tasks}
   tasks entry point: prechecks deploy reconfigure restart recover destroy restore_{prepare,apply,finish}
                      upgrade_{prechecks,repo} upgrade scale_in_prechecks scale_in
   tasks internal:    vars install firewall config status standalone galera users clustercheck selinux wait_synced
-                     restore_transfer restore_abort removed_check upgrade_{packages,lb_wait,leftovers}
+                     restore_transfer restore_abort removed_check dynamic_apply upgrade_{packages,lb_wait,leftovers}
   templates:         tera.cnf.j2 tera-clustercheck.j2 tera-clustercheck.socket.j2 tera-clustercheck@.service.j2
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
 roles/mariadb_backup/{defaults,vars,templates,files/{tera_backup.py,backup-target-rsync}}   # ADR 0012
@@ -226,6 +226,7 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_upgrade_debian_start_timeout` | `600` (Ubuntu: tunggu `mariadb-upgrade` dari `debian-start`) |
 | `mariadb_upgrade_lb_timeout` | `60` (tunggu HAProxy menandai node DOWN/UP; juga dipakai `tera scale-in`) |
 | `mariadb_scale_in_allow_writer` / `mariadb_scale_in_allow_backup_host` | `false` / `false` (`tera scale-in` untuk writer `single_writer` / `mariadb_backup_host`) |
+| `mariadb_dynamic_variables_extra` | `[]` (variabel tambahan untuk `SET GLOBAL` tanpa restart, ADR 0018; whitelist Tera, alias, dan deny list di `roles/mariadb/vars/main.yml`) |
 | `mariadb_scale_in_allow_readd` | `false` (`deploy` menambahkan kembali host bermarker "removed"; datadir berisi database butuh juga `mariadb_galera_allow_sst_overwrite`) |
 | `mariadb_admin_user` | `tera_admin` |
 | `mariadb_admin_hosts` | `["localhost"]` (list host/subnet, mis. `"10.10.10.%"`; `"%"` memicu warning prechecks; host yang dihapus dari list tidak di-drop otomatis) |

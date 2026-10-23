@@ -58,6 +58,31 @@
       Batasi ke subnet (mis. "10.10.10.%") di group_vars/all/tera.yml.
   when: "'%' in mariadb_admin_hosts"
 
+# ADR 0018: the deny list also applies to variables the operator makes dynamic.
+- name: Check mariadb_dynamic_variables_extra
+  ansible.builtin.assert:
+    that:
+      - mariadb_dynamic_variables_extra is sequence
+      - mariadb_dynamic_variables_extra is not string
+      - _mariadb_denied_extra | length == 0
+    fail_msg: >-
+      mariadb_dynamic_variables_extra harus list nama variabel. Variabel ini tidak boleh diubah lewat SET GLOBAL
+      (ADR 0018): {{ _mariadb_denied_extra | join(', ') }}. Perubahan wsrep_*, binlog_*, log_bin*, gtid_*,
+      auto_increment_*, server_id, read_only, innodb_flush_log_at_trx_commit, dan sync_binlog selalu lewat restart.
+      Hapus dari mariadb_dynamic_variables_extra.
+    quiet: true
+  vars:
+    _mariadb_extra_names: >-
+      {{ (mariadb_dynamic_variables_extra if (mariadb_dynamic_variables_extra is sequence
+          and mariadb_dynamic_variables_extra is not string) else [])
+         | map('string') | map('lower') | map('regex_replace', '-', '_') | list }}
+    _mariadb_extra_canonical: >-
+      {{ _mariadb_extra_names
+         | map('extract', dict(_mariadb_extra_names | zip(_mariadb_extra_names)) | combine(_mariadb_dynamic_aliases)) | list }}
+    _mariadb_denied_extra: >-
+      {{ _mariadb_extra_canonical | select('in', _mariadb_dynamic_denied) | list
+         + _mariadb_extra_canonical | select('match', '^(' ~ (_mariadb_dynamic_denied_prefixes | join('|')) ~ ')') | list }}
+
 - name: Check custom config directory is absolute
   ansible.builtin.assert:
     that:

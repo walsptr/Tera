@@ -153,6 +153,133 @@
         - _mariadb_cnf_only_removed | bool
         - not (_mariadb_scale_in_no_restart | bool)
 
+# ADR 0018: when every changed key is a whitelisted dynamic variable, the change is applied with SET GLOBAL
+# instead of a restart. All nodes plan first; the first node on that path (inventory order, hosts of this run)
+# applies first and a failure there fails the run before any node writes its config; a failure on another node
+# only gives that node the restart pending marker. Tasks run host by host in lockstep, which keeps this order.
+- name: Reset the dynamic path
+  ansible.builtin.set_fact:
+    _mariadb_dyn_ready: false
+    _mariadb_dyn_ok: false
+    _mariadb_dyn_changes: []
+    _mariadb_dyn_applied: false
+    _mariadb_dyn_rollback: {}
+
+- name: Plan the change without restart
+  when:
+    - _mariadb_cnf_check is changed
+    - not (_mariadb_sst_cnf_check is changed)
+    - not (_mariadb_scale_in_no_restart | bool)
+  block:
+    - name: Read the current 99-tera.cnf for the dynamic path
+      ansible.builtin.slurp:
+        src: "{{ _mariadb_config_dir }}/99-tera.cnf"
+      register: _mariadb_dyn_old
+      failed_when: false
+      check_mode: false
+
+    - name: Compare the old and new config
+      ansible.builtin.set_fact:
+        _mariadb_dyn_plan: >-
+          {{ (_mariadb_dyn_old.content | default('') | b64decode)
+             | tera_dynamic_plan(_mariadb_cnf, _mariadb_dynamic_variables + _extra, _mariadb_dynamic_aliases) }}
+      vars:
+        _extra: >-
+          {{ mariadb_dynamic_variables_extra | map('string') | map('lower') | map('regex_replace', '-', '_')
+             | map('extract', dict(_names | zip(_names)) | combine(_mariadb_dynamic_aliases)) | list }}
+        _names: "{{ mariadb_dynamic_variables_extra | map('string') | map('lower') | map('regex_replace', '-', '_') | list }}"
+
+    - name: Read the running values
+      ansible.builtin.command:
+        argv:
+          - mariadb
+          - -N
+          - -B
+          - -e
+          - "SELECT {{ _mariadb_dyn_plan.changes | map(attribute='variable') | map('regex_replace', '^', '@@GLOBAL.') | join(', ') }}"
+      register: _mariadb_dyn_read
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _mariadb_dyn_plan.dynamic | bool
+        - _mariadb_dyn_plan.changes | length > 0
+
+    - name: Prepare the dynamic path
+      ansible.builtin.set_fact:
+        _mariadb_dyn_running: "{{ _running }}"
+        _mariadb_dyn_changes: "{{ _mariadb_dyn_plan.changes | tera_dynamic_order(_running) }}"
+        _mariadb_dyn_ready: >-
+          {{ (_mariadb_dyn_plan.dynamic | bool)
+             and ((_mariadb_dyn_plan.changes | length == 0) or (_mariadb_dyn_read.rc | default(1)) == 0) }}
+      vars:
+        _vars: "{{ _mariadb_dyn_plan.changes | map(attribute='variable') | list }}"
+        _running: >-
+          {{ dict(_vars | zip(((_mariadb_dyn_read.stdout_lines | default([''], true) | first).split('	'))))
+             if (_mariadb_dyn_read.rc | default(1)) == 0 else {} }}
+
+    # Shown in normal runs and in --check --diff.
+    - name: Show how the config change is applied
+      ansible.builtin.debug:
+        msg: >-
+          {% if _mariadb_dyn_ready | bool %}{{ inventory_hostname }}: perubahan config tanpa restart (SET GLOBAL,
+          ADR 0018){{ ':' if _mariadb_dyn_changes else ' (hanya komentar)' }}
+          {% for c in _mariadb_dyn_changes %}{{ c.key }} {{ _mariadb_dyn_running[c.variable] }} -> {{ c.new }}{{ '; ' if not loop.last }}{% endfor %}
+          {% else %}{{ inventory_hostname }}: perubahan config butuh restart:
+          {{ (_mariadb_dyn_plan.reasons + ([] if (_mariadb_dyn_read.rc | default(0)) == 0 else ['MariaDB tidak berjalan'])) | join('; ') }}{% endif %}
+
+- name: Choose the first node of the dynamic path
+  ansible.builtin.set_fact:
+    _mariadb_dyn_first: >-
+      {{ ansible_play_hosts | map('extract', hostvars) | selectattr('_mariadb_dyn_ready')
+         | selectattr('_mariadb_dyn_changes') | map(attribute='inventory_hostname') | first | default('') }}
+
+- name: Apply on the first node
+  ansible.builtin.include_tasks: dynamic_apply.yml
+  when:
+    - inventory_hostname == _mariadb_dyn_first
+    - not ansible_check_mode
+
+# Before any node writes 99-tera.cnf (any_errors_fatal stops every host).
+- name: Fail when the first node refused the change
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} (node pertama jalur tanpa restart, ADR 0018): {{ _mariadb_dyn_error }}.
+      {% if (_mariadb_dyn_rollback.rc | default(0)) == 0 %}Semua key yang sudah diterapkan dikembalikan ke nilai
+      sebelumnya{% else %}PERHATIAN: pengembalian nilai juga gagal ({{ _mariadb_dyn_rollback.stderr | default('') | trim }});
+      periksa SHOW GLOBAL VARIABLES di node ini{% endif %}. Config tidak ditulis di node mana pun. Perbaiki nilainya
+      di custom config (pakai nilai efektif), lalu ulangi.
+  when:
+    - inventory_hostname == _mariadb_dyn_first
+    - not ansible_check_mode
+    - not (_mariadb_dyn_applied | bool)
+
+- name: Apply on the other nodes
+  ansible.builtin.include_tasks: dynamic_apply.yml
+  when:
+    - _mariadb_dyn_ready | bool
+    - _mariadb_dyn_changes | length > 0
+    - inventory_hostname != _mariadb_dyn_first
+    - not ansible_check_mode
+
+- name: Warn when a node falls back to restart
+  ansible.builtin.debug:
+    msg: >-
+      PERINGATAN: {{ inventory_hostname }}: {{ _mariadb_dyn_error }}. Nilai di node ini dikembalikan; restart pending
+      marker ditulis dan rolling restart menerapkan config ini (ADR 0018).
+  when:
+    - _mariadb_dyn_ready | bool
+    - _mariadb_dyn_changes | length > 0
+    - inventory_hostname != _mariadb_dyn_first
+    - not ansible_check_mode
+    - not (_mariadb_dyn_applied | bool)
+
+- name: Remember whether the dynamic path succeeded
+  ansible.builtin.set_fact:
+    _mariadb_dyn_ok: >-
+      {{ (_mariadb_dyn_ready | bool)
+         and ((_mariadb_dyn_changes | length == 0) or ansible_check_mode or (_mariadb_dyn_applied | bool)) }}
+
 # Written BEFORE the config so an interrupted run still restarts next time (ADR 0009).
 # Not a handler: it must run before the next task. Not written in --check (task runs in check mode).
 - name: Write restart pending marker # noqa: no-handler
@@ -162,7 +289,9 @@
     owner: root
     group: mysql
     mode: "0640"
-  when: ((_mariadb_cnf_check is changed) and not (_mariadb_scale_in_no_restart | bool)) or (_mariadb_sst_cnf_check is changed)
+  when: >-
+    ((_mariadb_cnf_check is changed) and not (_mariadb_scale_in_no_restart | bool) and not (_mariadb_dyn_ok | bool))
+    or (_mariadb_sst_cnf_check is changed)
   register: _mariadb_marker_write
 
 # The marker must reach the disk before the new config does: after a power loss, a new config
@@ -211,6 +340,6 @@
   ansible.builtin.set_fact:
     mariadb_restart_required: >-
       {{ (mariadb_restart_required | default(false) | bool)
-         or ((_mariadb_cnf_result is changed) and not (_mariadb_scale_in_no_restart | bool))
+         or ((_mariadb_cnf_result is changed) and not (_mariadb_scale_in_no_restart | bool) and not (_mariadb_dyn_ok | bool))
          or (_mariadb_sst_cnf_result is changed)
          or _mariadb_restart_marker_stat.stat.exists }}

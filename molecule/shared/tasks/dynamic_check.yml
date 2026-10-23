@@ -1,0 +1,34 @@
+---
+# On a node (ADR 0018 test): every variable in _dyn_expect has that value (compared after normalization), the
+# node was restarted only if _dyn_restarted (default false, against _dyn_start0) and no restart is pending.
+- name: Read the variables
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - -N
+      - -B
+      - -e
+      - "SELECT {{ _dyn_expect.keys() | map('regex_replace', '^', '@@GLOBAL.') | join(', ') }}"
+  register: _dyn_values
+  changed_when: false
+
+- name: Read the MariaDB start time
+  ansible.builtin.systemd_service:
+    name: mariadb
+  register: _dyn_start_now
+
+- name: Read the restart pending marker
+  ansible.builtin.stat:
+    path: /etc/tera/mariadb-restart-pending
+  register: _dyn_marker
+
+- name: Assert the values, restarts and marker
+  ansible.builtin.assert:
+    that:
+      - _dyn_actual == (_dyn_expect.values() | map('tera_mysql_norm') | list)
+      - (_dyn_start_now.status.ActiveEnterTimestampMonotonic != _dyn_start0.status.ActiveEnterTimestampMonotonic)
+        == (_dyn_restarted | default(false) | bool)
+      - not _dyn_marker.stat.exists
+    fail_msg: "expected={{ _dyn_expect | to_json }} actual={{ _dyn_values.stdout }} marker={{ _dyn_marker.stat.exists }}"
+  vars:
+    _dyn_actual: "{{ _dyn_values.stdout.split('\t') | map('tera_mysql_norm') | list }}"
