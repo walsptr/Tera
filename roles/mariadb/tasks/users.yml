@@ -1,4 +1,8 @@
 ---
+# Ubuntu: users are read through the mysql.user view, which a background mariadb-upgrade recreates.
+- name: Wait for the mariadb-upgrade of debian-start
+  ansible.builtin.include_tasks: debian_start_wait.yml
+
 # root@localhost stays unix_socket (ADR 0008): connect through the socket as OS root (become).
 - name: Manage MariaDB users and databases
   module_defaults:

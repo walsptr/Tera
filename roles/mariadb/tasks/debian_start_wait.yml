@@ -1,0 +1,29 @@
+---
+# Ubuntu: mariadb.service runs /etc/mysql/debian-start after every start (ExecStartPost), which runs
+# mariadb-upgrade --version-check in the background. A full run (missing or older mariadb_upgrade_info,
+# e.g. after a restore or a package upgrade) drops and recreates the mysql.user view, so queries on it
+# (ansible.mysql.mysql_user) may briefly see no rows. Never run two mariadb-upgrade at once either.
+# Used by users.yml (every caller) and upgrade.yml.
+- name: Wait for the background mariadb-upgrade of debian-start
+  ansible.builtin.command:
+    cmd: pgrep -f '^(/bin/bash /etc/mysql/debian-start|(/usr/bin/)?mariadb-upgrade)( |$)'
+  register: _mariadb_debian_start
+  until: _mariadb_debian_start.rc == 1
+  retries: "{{ (mariadb_upgrade_debian_start_timeout | int / 2) | int }}"
+  delay: 2
+  changed_when: false
+  failed_when: _mariadb_debian_start.rc not in [0, 1]
+  check_mode: false
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Check the background mariadb-upgrade of debian-start finished
+  ansible.builtin.assert:
+    that:
+      - _mariadb_debian_start.rc == 1
+    fail_msg: >-
+      {{ inventory_hostname }}: /etc/mysql/debian-start (mariadb-upgrade di background) masih berjalan setelah
+      {{ mariadb_upgrade_debian_start_timeout }} detik (mariadb_upgrade_debian_start_timeout). MariaDB sudah
+      berjalan; periksa journalctl -t /etc/mysql/debian-start, tunggu prosesnya selesai, lalu ulangi perintah
+      tera yang sama.
+    quiet: true
+  when: ansible_facts['os_family'] == 'Debian'

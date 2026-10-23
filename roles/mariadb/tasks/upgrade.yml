@@ -101,29 +101,9 @@
       ansible.builtin.include_tasks: wait_synced.yml
       when: mariadb_cluster_mode == 'galera'
 
-    # Ubuntu: mariadb.service runs /etc/mysql/debian-start after every start, which runs
-    # mariadb-upgrade --version-check in the background. Never run two mariadb-upgrade at once.
+    # Never run two mariadb-upgrade at once.
     - name: Wait for the mariadb-upgrade of debian-start
-      ansible.builtin.command:
-        cmd: pgrep -x mariadb-upgrade
-      register: _mariadb_upgrade_debian_start
-      until: _mariadb_upgrade_debian_start.rc == 1
-      retries: "{{ (mariadb_upgrade_debian_start_timeout | int / 2) | int }}"
-      delay: 2
-      changed_when: false
-      failed_when: _mariadb_upgrade_debian_start.rc not in [0, 1]
-      when: ansible_facts['os_family'] == 'Debian'
-
-    - name: Check the mariadb-upgrade of debian-start finished
-      ansible.builtin.assert:
-        that:
-          - _mariadb_upgrade_debian_start.rc == 1
-        fail_msg: >-
-          {{ inventory_hostname }}: mariadb-upgrade dari /etc/mysql/debian-start masih berjalan setelah
-          {{ mariadb_upgrade_debian_start_timeout }} detik (mariadb_upgrade_debian_start_timeout). MariaDB sudah
-          berjalan di versi baru; periksa journalctl -t /etc/mysql/debian-start, lalu ulangi tera upgrade.
-        quiet: true
-      when: ansible_facts['os_family'] == 'Debian'
+      ansible.builtin.include_tasks: debian_start_wait.yml
 
     # Local to this node: Galera does not replicate it, so it runs on every node (ADR 0015).
     - name: Run mariadb-upgrade --force
@@ -137,7 +117,7 @@
       ansible.builtin.copy:
         content: |
           # tera upgrade {{ tera_upgrade_id }} on {{ inventory_hostname }}: mariadb-upgrade --force (rc={{ _mariadb_upgrade_tables.rc }})
-          # debian-start mariadb-upgrade checks before this run: {{ _mariadb_upgrade_debian_start.attempts | default('n/a') }}
+          # debian-start mariadb-upgrade checks before this run: {{ _mariadb_debian_start.attempts | default('n/a') }}
           {{ _mariadb_upgrade_tables.stdout }}
           {{ _mariadb_upgrade_tables.stderr }}
         dest: "{{ _mariadb_upgrade_log }}-mariadb-upgrade.log"
