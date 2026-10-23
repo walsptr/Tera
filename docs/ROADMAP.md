@@ -99,6 +99,8 @@ serta restore lintas cluster menunggu ADR.
 
 ## Fase 4b — Operasional
 
+Ditutup dengan tag `v0.5.0`.
+
 - [x] Penerima restore khusus `tera-restore` dan kunci sementara ber-TTL (ADR 0014; Molecule `backup` Ubuntu 22.04/24.04 dan Rocky 9, `backup-galera` Ubuntu 24.04 dan Rocky 9)
 - [x] Kecil: `mariadbd` sementara untuk verifikasi/restore berjalan sebagai user `mysql`, bukan root (perbaiki izin direktori kerja)
 - [x] Kecil: field `galera_position` dihapus dari metadata backup (`format_version` tetap 1)
@@ -106,6 +108,35 @@ serta restore lintas cluster menunggu ADR.
 - [x] Exporter monitoring (`mysqld_exporter`, `node_exporter` opsional; ADR 0016; Molecule `monitoring` Ubuntu 24.04 dan Rocky 9, `monitoring-podman` 4 image)
 - [x] Scale in (ADR 0017; `tera scale-in` + langkah 2 tanpa restart, marker "removed" ditolak semua action; Molecule `scale` Ubuntu 24.04 dan Rocky 9)
 - [x] `SET GLOBAL` tanpa restart (ADR 0018; whitelist + alias + deny list, rollback semua key di node pertama, marker di node lain; Molecule `reconfigure` Ubuntu 24.04 dan Rocky 9, kasus dinamis di `standalone-podman` 4 image)
+
+Status: **selesai** (tag `v0.5.0`, 2026-10-23). Diverifikasi dari VM baru (2026-10-23, `main` `63cab68`; `reconfigure`
+di `e532ccd` dengan kode yang sama): `standalone` dan `backup` di Ubuntu 22.04/24.04 dan Rocky 9; `galera`,
+`reconfigure`, `recover`, `loadbalancer`, `destroy`, `backup-galera`, `upgrade`, `monitoring`, `scale` di Ubuntu 24.04
+dan Rocky 9 lulus; failover `loadbalancer` ≤ 4,9 detik. Dua run diulang karena sebab di luar Tera: `upgrade` Ubuntu
+24.04 (laptop suspend 108 menit di tengah run) dan `scale` Rocky 9 (unduhan dari `mirror.mariadb.org` gagal).
+GitHub Actions tidak menjalankan job sejak 2026-10-23 (kuota/billing akun). Keputusan pemilik 2026-10-23: fase ditutup
+dan di-tag tanpa menunggu CI, dengan pengganti lokal: `yamllint .`, `ansible-lint`, `ruff check plugins/ roles/`,
+`shellcheck`, syntax-check semua playbook, dan `pytest plugins/` (124) lulus; `standalone-podman`, `upgrade-podman`,
+`monitoring-podman` di Ubuntu 24.04 dan Rocky 9 lulus, kecuali satu kegagalan `standalone-podman` Ubuntu 24.04 (lihat
+di bawah; sesudahnya side effect diulang sekali dan 3 run penuh, semuanya lulus). Run GitHub Actions terakhir pada kode yang sama kecuali test `reconfigure` (`6f9e6c0`, run
+39141085405) lulus di keempat image.
+
+Tetap terbuka:
+
+- `tera restore` tahap 2 di Ubuntu gagal sekali (2026-10-23, `standalone-podman` Ubuntu 24.04) di task "Create admin
+  user" dengan `'NoneType' object is not subscriptable` dari `ansible.mysql.mysql_user`, pada akun admin kedua. Saat
+  itu data hasil restore sudah aktif; datadir lama dan marker restore tetap ada, jadi pesan rescue ("kembali ke data
+  lama") tidak berarti restore-nya gagal. Penyebab belum diketahui. Yang sudah dicek: setelah setiap restore di
+  Ubuntu, `debian-start` menjalankan `mariadb-upgrade` penuh sekitar 5 detik (mariabackup tidak menyalin
+  `mariadb_upgrade_info`) bersamaan dengan `users.yml`, tetapi query yang dipakai modul tidak pernah kosong selama
+  jendela itu (30.000 sampel). Jalur ini tidak berubah sejak `v0.4.0`. Dicatat terbuka atas usulan Claude, dipilih
+  pemilik 2026-10-23.
+- Satu kegagalan `monitoring` di Ubuntu 24.04 (2026-10-18 17:18 WIB, 1 dari 3 run, assert "Assert Rocky refuses the
+  host and Ubuntu does not"). Bukan insiden DNS hari itu: aturan MASQUERADE baru dipasang pukul 21:33 dan stub DNS host
+  tidak menolak query apa pun sebelum 21:34; converge dan idempotence run itu (unduhan dari repo) lulus; probe memakai
+  IP. Status yang diterima host tidak tercatat (`fail_msg` test rusak, diperbaiki hari itu). Petunjuk: saat itu
+  `monitoring-podman` berjalan paralel di host yang sama dan timeout probe masih 5 detik (sekarang 10). Tidak muncul
+  lagi sesudahnya, termasuk di regresi 2026-10-23.
 
 Kandidat ADR di luar Fase 4: replikasi async, upgrade major, PITR dari binlog, restore lintas cluster,
 target backup S3/MinIO.
