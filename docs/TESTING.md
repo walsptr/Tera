@@ -44,20 +44,65 @@ lint, syntax-check, dan pytest.
   - Firewall host harus mengizinkan DHCP/DNS dari bridge libvirt. firewalld (default Fedora) sudah
     menangani ini lewat zona `libvirt`. `iptables-services` dengan ruleset bawaan (`REJECT` di akhir
     chain INPUT) memblokir DHCP: VM boot tetapi tidak pernah mendapat IP dan `vagrant up` timeout.
-  - dnsmasq libvirt meneruskan DNS ke resolver host. Di sebagian jaringan (terlihat 2026-10-16 di satu Wi-Fi),
-    resolver itu tidak menjawab dari libvirt, sehingga `dnf`/`apt` di VM gagal dengan "Could not resolve
-    host" walaupun VM punya koneksi IP. Cek dari host: `dig @<resolver> mariadb.org`. Workaround lab saja,
-    di VM yang sudah dibuat (bukan bagian role atau skenario):
-    `nmcli con mod "<koneksi eth0>" ipv4.ignore-auto-dns yes ipv4.dns 1.1.1.1 && nmcli con up "<koneksi eth0>"`
-    (Rocky), lalu jalankan `molecule converge` lagi.
+  - dnsmasq libvirt meneruskan DNS VM ke nameserver di `/etc/resolv.conf` host; di Fedora itu stub
+    systemd-resolved `127.0.0.53`. Jika `dnf`/`apt` di VM gagal dengan "Could not resolve host" / "Temporary
+    failure in name resolution" padahal VM punya koneksi IP, masalahnya di DNS host: perbaiki di host, bukan
+    di dalam VM. Diagnosis dari host:
+    - `dig +time=2 @127.0.0.53 deb.mariadb.org` timeout, tetapi `dig +time=2 @127.0.0.54 deb.mariadb.org`
+      menjawab: stub `.53` membuang query yang pengirimnya bukan alamat loopback (`journalctl -u
+      systemd-resolved` berisi "Got packet on unexpected (i.e. non-localhost) IP range, ignoring"), sedangkan
+      `.54` tidak memeriksa pengirim. Di lab (2026-10-18) penyebabnya aturan
+      `iptables -t nat -A POSTROUTING -j MASQUERADE` tanpa `-s`/`-o`. Aturan itu ikut me-NAT trafik loopback,
+      sehingga query dari host sendiri tiba di `.53` dengan alamat LAN. Restart systemd-resolved tidak menolong.
+      Cek `sudo iptables -t nat -S POSTROUTING`, hapus aturan itu
+      (`sudo iptables -t nat -D POSTROUTING -j MASQUERADE`), dan batasi NAT dengan `-s <subnet>`/`-o <interface>`.
+      Aturan yang tidak disimpan juga hilang saat reboot; di lab, reboot itulah yang memulihkan stub. Untuk
+      memberi VM di jaringan libvirt akses keluar, MASQUERADE tambahan tidak diperlukan (libvirt sudah memasang
+      masquerade untuk subnetnya); di host dengan Docker yang kurang adalah izin `DOCKER-USER` (poin berikut).
+    - Keduanya menjawab tetapi VM tetap gagal: lihat nameserver di `/etc/resolv.conf`. Client VPN bisa
+      menggantinya dengan DNS VPN (di lab 2026-10-16: SonicWall NetExtender me-mount resolv.conf sendiri di atas
+      `stub-resolv.conf`, terlihat sebagai unit `run-systemd-resolve-stub\x2dresolv.conf.mount`). Cek:
+      `findmnt /run/systemd/resolve/stub-resolv.conf` (ada mount berarti resolv.conf diganti) dan
+      `ip -brief link show snwl_ssltunnel` (tunnel VPN aktif). Jika server itu tidak menjawab
+      (`dig @<nameserver> deb.mariadb.org`), dnsmasq libvirt ikut gagal; putuskan atau sambungkan ulang VPN.
   - Docker di host yang sama memasang policy `FORWARD DROP` di iptables. VM tetap mendapat IP dan bisa
     ping gateway `192.168.121.1`, tetapi trafik keluar di-drop: task repo MariaDB gagal dengan
-    "Could not fetch signed_by key" / "Network is unreachable" atau timeout. Izinkan jaringan manajemen
-    vagrant-libvirt lewat chain `DOCKER-USER`:
+    "Could not fetch signed_by key" / "Network is unreachable" atau timeout. Izinkan jaringan libvirt lewat
+    chain `DOCKER-USER`. Perintah `iptables` langsung (mis.
     `sudo iptables -I DOCKER-USER -s 192.168.121.0/24 -j ACCEPT` dan
-    `sudo iptables -I DOCKER-USER -d 192.168.121.0/24 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`.
-    Perintah `iptables` saja hilang setelah reboot; di lab pemilik kedua aturan dibuat permanen lewat service
-    systemd `libvirt-docker-forward` yang memasangnya setelah `docker.service` start.
+    `sudo iptables -I DOCKER-USER -d 192.168.121.0/24 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`)
+    hilang setelah reboot. Di lab pemilik aturannya permanen lewat unit systemd berikut, contoh untuk host
+    Fedora yang juga menjalankan Docker. Unit ini mencakup jaringan manajemen vagrant-libvirt
+    (`192.168.121.0/24`) dan jaringan `default` libvirt (`192.168.122.0/24`), menunggu Docker membuat chain
+    `DOCKER-USER`, dan menghapus aturannya saat Docker berhenti
+    (`/etc/systemd/system/libvirt-docker-forward.service`):
+
+    ```ini
+    [Unit]
+    Description=Allow libvirt networks through Docker's DOCKER-USER chain
+    After=docker.service
+    BindsTo=docker.service
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    TimeoutStartSec=30
+    ExecStartPre=/bin/sh -c 'until iptables -n -L DOCKER-USER >/dev/null 2>&1; do sleep 1; done'
+    ExecStart=/bin/sh -c 'for n in 192.168.121.0/24 192.168.122.0/24; do \
+      iptables -C DOCKER-USER -s $$n -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -s $$n -j ACCEPT; \
+      iptables -C DOCKER-USER -d $$n -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      iptables -I DOCKER-USER -d $$n -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; done'
+    ExecStop=/bin/sh -c 'for n in 192.168.121.0/24 192.168.122.0/24; do \
+      iptables -D DOCKER-USER -s $$n -j ACCEPT 2>/dev/null; \
+      iptables -D DOCKER-USER -d $$n -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; done; true'
+
+    [Install]
+    WantedBy=docker.service
+    ```
+
+    Aktifkan dengan `sudo systemctl daemon-reload && sudo systemctl enable --now libvirt-docker-forward`. Cek:
+    `systemctl is-active libvirt-docker-forward` harus `active`, dan `sudo iptables -S DOCKER-USER` berisi empat
+    aturan `ACCEPT`.
   - vagrant-libvirt 0.11 memakai `virtual_size` dari `metadata.json` box sebagai ukuran disk VM. Box
     Rocky 9.8 menulis `5` padahal image-nya 10 GiB, sehingga disk terpotong dan guest jatuh ke dracut
     emergency mode (tidak pernah mendapat IP). Skenario memaksa `machine_virtual_size: 10`; box dengan
@@ -148,11 +193,12 @@ default `11.4.12`), lalu ke `latest`. Repo normal MariaDB hanya menyimpan bebera
 repo"; naikkan `TERA_UPGRADE_FROM` dan `TERA_UPGRADE_TO` (dan default di `molecule/upgrade*/`) ke dua patch
 terakhir yang masih ada, dengan `TERA_UPGRADE_FROM` di bawah keduanya.
 
-Catatan lab: jika `/etc/resolv.conf` host adalah stub systemd-resolved (`nameserver 127.0.0.53`), `podman build`
-(tahap `create` skenario podman) gagal dengan "Temporary failure resolving", sedangkan `podman run` tetap bisa,
-karena build menyalin resolv.conf host. Tanpa mengubah config podman permanen: buat file berisi
-`[containers]` dan `dns_servers = ["<dns lan>", "1.1.1.1"]`, lalu jalankan molecule dengan
-`CONTAINERS_CONF_OVERRIDE=<file>`. CI tidak terpengaruh.
+Catatan lab: di host lab (podman 5.8 rootless) `podman build` (tahap `create` skenario podman) menjalankan
+`RUN` di network namespace host dengan `/etc/resolv.conf` host apa adanya (`nameserver 127.0.0.53`), sedangkan
+`podman run` memakai forwarder pasta plus server upstream dari `/run/systemd/resolve/resolv.conf`. Jadi saat stub
+host tidak menjawab (lihat catatan DNS host di bagian Molecule di atas), build gagal dengan "Temporary failure
+resolving" walaupun `podman run` tetap bisa resolve. Perbaiki DNS host; DNS podman tidak perlu di-override.
+CI tidak terpengaruh.
 
 Catatan: podman rootless menyalin IP host ke setiap container, sehingga skenario multi-node tidak bisa
 memakai pola ini.
