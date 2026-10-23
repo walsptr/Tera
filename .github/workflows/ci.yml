@@ -4,6 +4,7 @@ name: CI
 "on":
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   lint:
@@ -61,6 +62,11 @@ jobs:
 
   molecule-podman:
     # Fast complement only; Galera, Keepalived, sysctl and SELinux need the VM scenarios.
+    # Uses most of the Actions minutes, so it runs only for tags, pull requests and manual runs;
+    # lint, syntax-check and pytest run on every push.
+    if: >-
+      startsWith(github.ref, 'refs/tags/') || github.event_name == 'pull_request'
+      || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false

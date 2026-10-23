@@ -4,7 +4,9 @@
 
 Alat pengembangan dipasang lokal di `.venv/` dan `collections/` (langkah lengkap di `AGENTS.md`,
 bagian "Setup lingkungan dev"). CI (`.github/workflows/ci.yml`) menjalankan
-lint, syntax-check, dan pytest.
+lint, syntax-check, dan pytest di setiap push. Job `molecule-podman` (lihat `standalone-podman` di bawah) memakai
+sebagian besar menit Actions, jadi hanya berjalan untuk tag, pull request, dan `workflow_dispatch`
+(`gh workflow run ci.yml --ref <branch>`).
 
 | Level | Perintah | Kapan |
 |---|---|---|
@@ -177,7 +179,7 @@ TERA_BOX=cloud-image/ubuntu-24.04 TERA_BOX_VERSION=20260926.0.0 molecule test -s
 Skenario `standalone-podman` menjalankan playbook yang sama (`molecule/shared/`) di container podman
 rootless dengan systemd, image dibangun sendiri dari `molecule/standalone-podman/Dockerfile.j2`.
 Ini **pelengkap cepat, bukan pengganti VM**: Galera, Keepalived, sysctl, dan SELinux tetap wajib diuji
-di VM. Juga dijalankan di CI (job `molecule-podman`).
+di VM. Juga dijalankan di CI (job `molecule-podman`, hanya untuk tag, pull request, dan `workflow_dispatch`).
 
 ```bash
 for image in docker.io/library/ubuntu:22.04 docker.io/library/ubuntu:24.04 \
