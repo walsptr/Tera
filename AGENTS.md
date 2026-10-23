@@ -15,7 +15,7 @@ Tera menggabungkan dua pola:
 
 ## Status & target
 
-- Fase aktif: **Fase 4 selesai; fase berikutnya belum diputuskan** (Fase 5 PostgreSQL atau memoles menuju v1.0.0; Fase 4b selesai, tag `v0.5.0`; Fase 4a selesai, tag `v0.4.0`; Fase 3 selesai, tag `v0.3.0`/`v0.3.1`; Fase 2 tag `v0.2.0`; Fase 1 tag `v0.1.0`). Checklist di `docs/ROADMAP.md`.
+- Fase aktif: **Fase 4 selesai; fase berikutnya belum diputuskan** (Fase 5 PostgreSQL atau memoles menuju v1.0.0; Fase 4b selesai, tag `v0.5.0`, perbaikan `v0.5.1`; Fase 4a selesai, tag `v0.4.0`; Fase 3 selesai, tag `v0.3.0`/`v0.3.1`; Fase 2 tag `v0.2.0`; Fase 1 tag `v0.1.0`). Checklist di `docs/ROADMAP.md`.
 - OS target: Ubuntu 22.04 / 24.04, Rocky Linux 9, AlmaLinux 9. Jangan menambah OS lain tanpa diminta.
 - MariaDB dari repo upstream, default `mariadb_version: "11.4"`.
 - ansible-core >= 2.16 (syarat `ansible.mysql`). Dev/CI memakai versi yang di-pin di `requirements-dev.txt`. Collections: `ansible.mysql`, `community.general`, `ansible.posix`.

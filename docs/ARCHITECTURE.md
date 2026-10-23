@@ -22,7 +22,8 @@ roles/mariadb/{defaults,vars/{main,Debian,RedHat}.yml,templates,tasks}
   tasks entry point: prechecks deploy reconfigure restart recover destroy restore_{prepare,apply,finish}
                      upgrade_{prechecks,repo} upgrade scale_in_prechecks scale_in
   tasks internal:    vars install firewall config status standalone galera users clustercheck selinux wait_synced
-                     restore_transfer restore_abort removed_check dynamic_apply upgrade_{packages,lb_wait,leftovers}
+                     restore_transfer restore_abort removed_check dynamic_apply debian_start_wait
+                     upgrade_{packages,lb_wait,leftovers}
   templates:         tera.cnf.j2 tera-clustercheck.j2 tera-clustercheck.socket.j2 tera-clustercheck@.service.j2
 roles/loadbalancer/{defaults,handlers,templates/{haproxy.cfg.j2,keepalived.conf.j2},tasks/{prechecks,deploy,reconfigure,destroy,install,config}.yml}
 roles/mariadb_backup/{defaults,vars,templates,files/{tera_backup.py,backup-target-rsync}}   # ADR 0012
@@ -223,7 +224,7 @@ Variabel role `mariadb` (`roles/mariadb/defaults/main.yml`):
 | `mariadb_upgrade_allow_without_backup` | `false` (`true` = upgrade boleh saat backup tidak aktif) |
 | `mariadb_upgrade_package_retries` / `mariadb_upgrade_package_delay` | `3` / `10` |
 | `mariadb_upgrade_min_free_mb` | `1024` (ruang bebas minimal di `/var`) |
-| `mariadb_upgrade_debian_start_timeout` | `600` (Ubuntu: tunggu `mariadb-upgrade` dari `debian-start`) |
+| `mariadb_upgrade_debian_start_timeout` | `600` (Ubuntu: tunggu `mariadb-upgrade` dari `debian-start` sebelum `users.yml` dan sebelum `mariadb-upgrade --force`) |
 | `mariadb_upgrade_lb_timeout` | `60` (tunggu HAProxy menandai node DOWN/UP; juga dipakai `tera scale-in`) |
 | `mariadb_scale_in_allow_writer` / `mariadb_scale_in_allow_backup_host` | `false` / `false` (`tera scale-in` untuk writer `single_writer` / `mariadb_backup_host`) |
 | `mariadb_dynamic_variables_extra` | `[]` (variabel tambahan untuk `SET GLOBAL` tanpa restart, ADR 0018; whitelist Tera, alias, dan deny list di `roles/mariadb/vars/main.yml`) |

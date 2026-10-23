@@ -84,6 +84,17 @@ Dievaluasi setelah config ditulis, sebelum start/restart.
 4. Hapus restart pending marker dan set `mariadb_restart_required: false`.
 5. Setelah itu `users.yml` dijalankan di bootstrap host.
 
+## `users.yml` di Ubuntu
+
+`mariadb.service` di Ubuntu menjalankan `/etc/mysql/debian-start` setelah setiap start; skrip itu menjalankan
+`mariadb-upgrade --version-check` di background. Jika `mariadb_upgrade_info` tidak ada atau versinya lebih lama
+(install baru, restore, upgrade paket), `mariadb-upgrade` berjalan penuh (sekitar 5 detik) dan menghapus lalu membuat
+ulang view `mysql.user` (`mariadb_system_tables_fix.sql` menghapusnya jika `CHARACTER_SET_CLIENT` bukan `latin1`).
+Selama jendela itu query `ansible.mysql.mysql_user` bisa tidak mendapat baris. Karena itu `users.yml`, untuk setiap
+pemanggilnya (deploy standalone, fresh bootstrap, join, restore, reconfigure), lebih dulu menunggu proses itu selesai
+(`debian_start_wait.yml`, batas `mariadb_upgrade_debian_start_timeout`). `tera upgrade` memakai task yang sama sebelum
+`mariadb-upgrade --force`. `tera recover` tidak menjalankan `users.yml`.
+
 ## Restart pending marker (ADR 0009)
 
 - `config.yml` mendeteksi perubahan `99-tera.cnf` dengan `copy` `check_mode: true`. Jika akan berubah,

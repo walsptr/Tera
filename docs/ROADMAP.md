@@ -109,7 +109,7 @@ Ditutup dengan tag `v0.5.0`.
 - [x] Scale in (ADR 0017; `tera scale-in` + langkah 2 tanpa restart, marker "removed" ditolak semua action; Molecule `scale` Ubuntu 24.04 dan Rocky 9)
 - [x] `SET GLOBAL` tanpa restart (ADR 0018; whitelist + alias + deny list, rollback semua key di node pertama, marker di node lain; Molecule `reconfigure` Ubuntu 24.04 dan Rocky 9, kasus dinamis di `standalone-podman` 4 image)
 
-Status: **selesai** (tag `v0.5.0`, 2026-10-23). Diverifikasi dari VM baru (2026-10-23, `main` `63cab68`; `reconfigure`
+Status: **selesai** (tag `v0.5.0`, 2026-10-23; perbaikan `v0.5.1`, 2026-10-24). Diverifikasi dari VM baru (2026-10-23, `main` `63cab68`; `reconfigure`
 di `e532ccd` dengan kode yang sama): `standalone` dan `backup` di Ubuntu 22.04/24.04 dan Rocky 9; `galera`,
 `reconfigure`, `recover`, `loadbalancer`, `destroy`, `backup-galera`, `upgrade`, `monitoring`, `scale` di Ubuntu 24.04
 dan Rocky 9 lulus; failover `loadbalancer` ≤ 4,9 detik. Dua run diulang karena sebab di luar Tera: `upgrade` Ubuntu
@@ -121,22 +121,28 @@ dan di-tag tanpa menunggu CI, dengan pengganti lokal: `yamllint .`, `ansible-lin
 di bawah; sesudahnya side effect diulang sekali dan 3 run penuh, semuanya lulus). Run GitHub Actions terakhir pada kode yang sama kecuali test `reconfigure` (`6f9e6c0`, run
 39141085405) lulus di keempat image.
 
-Tetap terbuka:
+Kasus terbuka saat `v0.5.0`, ditutup 2026-10-24:
 
 - `tera restore` tahap 2 di Ubuntu gagal sekali (2026-10-23, `standalone-podman` Ubuntu 24.04) di task "Create admin
-  user" dengan `'NoneType' object is not subscriptable` dari `ansible.mysql.mysql_user`, pada akun admin kedua. Saat
-  itu data hasil restore sudah aktif; datadir lama dan marker restore tetap ada, jadi pesan rescue ("kembali ke data
-  lama") tidak berarti restore-nya gagal. Penyebab belum diketahui. Yang sudah dicek: setelah setiap restore di
-  Ubuntu, `debian-start` menjalankan `mariadb-upgrade` penuh sekitar 5 detik (mariabackup tidak menyalin
-  `mariadb_upgrade_info`) bersamaan dengan `users.yml`, tetapi query yang dipakai modul tidak pernah kosong selama
-  jendela itu (30.000 sampel). Jalur ini tidak berubah sejak `v0.4.0`. Dicatat terbuka atas usulan Claude, dipilih
-  pemilik 2026-10-23.
+  user" dengan `'NoneType' object is not subscriptable` dari `ansible.mysql.mysql_user`. Penyebab yang paling
+  mungkin: race dengan `mariadb-upgrade` dari `/etc/mysql/debian-start`, yang berjalan penuh setelah restore
+  (mariabackup tidak menyalin `mariadb_upgrade_info`) bersamaan dengan `users.yml`. Dicek di source 11.4:
+  `mariadb_system_tables_fix.sql` menghapus view `mysql.user` jika `CHARACTER_SET_CLIENT` bukan `latin1` (di node Tera
+  Ubuntu nilainya `utf8mb4`), lalu `mariadb_system_tables.sql` yang dijalankan sesudahnya membuatnya lagi. Query
+  `information_schema.COLUMNS` milik modul (`colA`, lalu `colA[0]`) kosong pada 174 dari 40.000 sampel selama satu
+  `mariadb-upgrade --force`. Sampling 2026-10-23 (30.000 sampel, tidak ada yang kosong) tidak mencatat query dan
+  charset view yang dipakai, jadi selisihnya tidak bisa dijelaskan. Perbaikan `v0.5.1`:
+  `users.yml` lebih dulu menunggu `debian-start` selesai (`debian_start_wait.yml`, task yang juga dipakai
+  `tera upgrade`), sehingga semua jalur yang menjalankan `users.yml` tercakup (deploy standalone, fresh bootstrap,
+  restore, reconfigure). `tera recover` tidak menjalankan `users.yml`. Uji: `standalone-podman` Ubuntu 24.04 10 run
+  berturut-turut lulus; di satu run tambahan output tahap 2 restore diperiksa: task menunggu 2 kali percobaan sebelum
+  `users.yml`.
 - Satu kegagalan `monitoring` di Ubuntu 24.04 (2026-10-18 17:18 WIB, 1 dari 3 run, assert "Assert Rocky refuses the
-  host and Ubuntu does not"). Bukan insiden DNS hari itu: aturan MASQUERADE baru dipasang pukul 21:33 dan stub DNS host
-  tidak menolak query apa pun sebelum 21:34; converge dan idempotence run itu (unduhan dari repo) lulus; probe memakai
-  IP. Status yang diterima host tidak tercatat (`fail_msg` test rusak, diperbaiki hari itu). Petunjuk: saat itu
-  `monitoring-podman` berjalan paralel di host yang sama dan timeout probe masih 5 detik (sekarang 10). Tidak muncul
-  lagi sesudahnya, termasuk di regresi 2026-10-23.
+  host and Ubuntu does not"). Bukan DNS (aturan MASQUERADE baru dipasang pukul 21:33). Penyebab yang paling mungkin:
+  perebutan resource, karena `monitoring-podman` berjalan paralel di host yang sama dan timeout probe masih 5 detik.
+  Ditutup setelah `monitoring` lulus 3 run berturut-turut dari VM baru di Ubuntu 24.04 dengan timeout 10 detik
+  (2026-10-24, tanpa run Tera lain yang berjalan bersamaan). Aturan lab: skenario podman tidak dijalankan bersamaan dengan
+  skenario VM.
 
 Kandidat ADR di luar Fase 4: replikasi async, upgrade major, PITR dari binlog, restore lintas cluster,
 target backup S3/MinIO.
